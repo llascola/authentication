@@ -70,7 +70,7 @@ func TestCredentialID(t *testing.T) {
 
 func TestCredentialTypeValid(t *testing.T) {
 	valid := []domain.CredentialType{
-		domain.CredentialPassword, domain.CredentialOAuth, domain.CredentialOTP,
+		domain.CredentialPassword, domain.CredentialOAuth, domain.CredentialOTP, domain.CredentialWebAuthn,
 	}
 	for _, ct := range valid {
 		if !ct.Valid() {
@@ -300,4 +300,162 @@ func TestOTPCredentialConfirm(t *testing.T) {
 	if err := c.Confirm(); !errors.Is(err, domain.ErrOTPAlreadyConfirmed) {
 		t.Errorf("second confirm err = %v, want ErrOTPAlreadyConfirmed", err)
 	}
+}
+
+// --- WebAuthn value objects ------------------------------------------------
+
+func mustWebAuthnID(t *testing.T, b []byte) domain.WebAuthnID {
+	t.Helper()
+	w, err := domain.NewWebAuthnID(b)
+	if err != nil {
+		t.Fatalf("NewWebAuthnID: unexpected error: %v", err)
+	}
+	return w
+}
+
+func mustPublicKey(t *testing.T, b []byte) domain.PublicKey {
+	t.Helper()
+	k, err := domain.NewPublicKey(b)
+	if err != nil {
+		t.Fatalf("NewPublicKey: unexpected error: %v", err)
+	}
+	return k
+}
+
+func TestNewWebAuthnID(t *testing.T) {
+	if _, err := domain.NewWebAuthnID(nil); !errors.Is(err, domain.ErrEmptyWebAuthnID) {
+		t.Errorf("nil err = %v, want ErrEmptyWebAuthnID", err)
+	}
+	w := mustWebAuthnID(t, []byte("cred-handle"))
+	if w.IsZero() || !bytes.Equal(w.Bytes(), []byte("cred-handle")) {
+		t.Error("webauthn id not stored correctly")
+	}
+}
+
+func TestNewPublicKey(t *testing.T) {
+	if _, err := domain.NewPublicKey([]byte{}); !errors.Is(err, domain.ErrEmptyPublicKey) {
+		t.Errorf("empty err = %v, want ErrEmptyPublicKey", err)
+	}
+	k := mustPublicKey(t, []byte("cose-key"))
+	if k.IsZero() || !bytes.Equal(k.Bytes(), []byte("cose-key")) {
+		t.Error("public key not stored correctly")
+	}
+}
+
+func TestWebAuthnBytesIsolation(t *testing.T) {
+	in := []byte("k")
+	w := mustWebAuthnID(t, in)
+	k := mustPublicKey(t, in)
+
+	in[0] = 'X'
+	if !bytes.Equal(w.Bytes(), []byte("k")) || !bytes.Equal(k.Bytes(), []byte("k")) {
+		t.Error("constructor did not copy input")
+	}
+	out := w.Bytes()
+	out[0] = 'Y'
+	if !bytes.Equal(w.Bytes(), []byte("k")) {
+		t.Error("Bytes() exposed internal slice")
+	}
+}
+
+// --- WebAuthnCredential ----------------------------------------------------
+
+func TestNewWebAuthnCredential(t *testing.T) {
+	uid := mustUserID(t)
+
+	t.Run("ok", func(t *testing.T) {
+		c, err := domain.NewWebAuthnCredential(uid, mustWebAuthnID(t, []byte("h")), mustPublicKey(t, []byte("pk")), 5)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.ID().IsZero() {
+			t.Error("id not set")
+		}
+		if c.Type() != domain.CredentialWebAuthn {
+			t.Errorf("type = %v, want webauthn", c.Type())
+		}
+		if c.SignCount() != 5 {
+			t.Errorf("signCount = %d, want 5", c.SignCount())
+		}
+		if !c.CreatedAt().Equal(c.UpdatedAt()) {
+			t.Error("createdAt and updatedAt should match on creation")
+		}
+		// satisfies the sealed Credential interface
+		var _ domain.Credential = c
+	})
+
+	tests := []struct {
+		name       string
+		userID     domain.UserID
+		webAuthnID domain.WebAuthnID
+		publicKey  domain.PublicKey
+		wantErr    error
+	}{
+		{"zero userID", domain.UserID{}, mustWebAuthnID(t, []byte("h")), mustPublicKey(t, []byte("pk")), domain.ErrInvalidUserID},
+		{"empty webauthn id", uid, domain.WebAuthnID{}, mustPublicKey(t, []byte("pk")), domain.ErrEmptyWebAuthnID},
+		{"empty public key", uid, mustWebAuthnID(t, []byte("h")), domain.PublicKey{}, domain.ErrEmptyPublicKey},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := domain.NewWebAuthnCredential(tc.userID, tc.webAuthnID, tc.publicKey, 0)
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("err = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestWebAuthnVerifyCounter(t *testing.T) {
+	newCred := func(t *testing.T, start uint32) *domain.WebAuthnCredential {
+		t.Helper()
+		c, err := domain.NewWebAuthnCredential(mustUserID(t), mustWebAuthnID(t, []byte("h")), mustPublicKey(t, []byte("pk")), start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	t.Run("advance accepted and recorded", func(t *testing.T) {
+		c := newCred(t, 5)
+		if err := c.VerifyCounter(6); err != nil {
+			t.Fatalf("VerifyCounter: %v", err)
+		}
+		if c.SignCount() != 6 {
+			t.Errorf("signCount = %d, want 6", c.SignCount())
+		}
+	})
+
+	t.Run("zero on both sides accepted (counter-less)", func(t *testing.T) {
+		c := newCred(t, 0)
+		if err := c.VerifyCounter(0); err != nil {
+			t.Errorf("0/0 err = %v, want nil", err)
+		}
+		if c.SignCount() != 0 {
+			t.Errorf("signCount = %d, want 0", c.SignCount())
+		}
+	})
+
+	t.Run("equal counter rejected as clone", func(t *testing.T) {
+		c := newCred(t, 7)
+		if err := c.VerifyCounter(7); !errors.Is(err, domain.ErrAuthenticatorCloned) {
+			t.Errorf("err = %v, want ErrAuthenticatorCloned", err)
+		}
+		if c.SignCount() != 7 {
+			t.Error("rejected counter must not mutate signCount")
+		}
+	})
+
+	t.Run("regressed counter rejected as clone", func(t *testing.T) {
+		c := newCred(t, 10)
+		if err := c.VerifyCounter(3); !errors.Is(err, domain.ErrAuthenticatorCloned) {
+			t.Errorf("err = %v, want ErrAuthenticatorCloned", err)
+		}
+	})
+
+	t.Run("zero after non-zero rejected as clone", func(t *testing.T) {
+		c := newCred(t, 4)
+		if err := c.VerifyCounter(0); !errors.Is(err, domain.ErrAuthenticatorCloned) {
+			t.Errorf("err = %v, want ErrAuthenticatorCloned", err)
+		}
+	})
 }

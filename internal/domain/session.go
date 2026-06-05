@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -12,15 +13,17 @@ import (
 
 // Session errors.
 var (
-	ErrInvalidSessionID = errors.New("domain: invalid session id")
-	ErrEmptyTokenHash   = errors.New("domain: token hash is empty")
-	ErrInvalidAuthLevel = errors.New("domain: invalid auth level")
-	ErrInvalidTTL       = errors.New("domain: invalid session ttl")
-	ErrInvalidIP        = errors.New("domain: invalid ip address")
-	ErrSessionRevoked   = errors.New("domain: session revoked")
-	ErrSessionExpired   = errors.New("domain: session expired")
-	ErrSessionNotActive = errors.New("domain: session not active")
-	ErrAALNotRaised     = errors.New("domain: auth level cannot be lowered")
+	ErrInvalidSessionID  = errors.New("domain: invalid session id")
+	ErrEmptyTokenHash    = errors.New("domain: token hash is empty")
+	ErrInvalidAuthLevel  = errors.New("domain: invalid auth level")
+	ErrInvalidTTL        = errors.New("domain: invalid session ttl")
+	ErrInvalidIP         = errors.New("domain: invalid ip address")
+	ErrSessionRevoked    = errors.New("domain: session revoked")
+	ErrSessionExpired    = errors.New("domain: session expired")
+	ErrSessionNotActive  = errors.New("domain: session not active")
+	ErrAALNotRaised      = errors.New("domain: auth level cannot be lowered")
+	ErrInvalidAuthMethod = errors.New("domain: invalid auth method")
+	ErrNoAuthMethod      = errors.New("domain: session requires at least one auth method")
 )
 
 // ---------------------------------------------------------------------------
@@ -92,6 +95,50 @@ func (l AuthLevel) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// ---------------------------------------------------------------------------
+// AuthMethod (amr)
+// ---------------------------------------------------------------------------
+
+// AuthMethod identifies a single factor used to authenticate a session (the
+// OIDC "amr" claim, RFC 8176). AuthLevel records the assurance *tier* reached;
+// amr records *which* methods produced it — kept for audit and for finer policy
+// (e.g. a step-up rule demanding a specific method, not just a level).
+type AuthMethod string
+
+const (
+	AuthMethodPassword AuthMethod = "pwd"
+	AuthMethodOTP      AuthMethod = "otp"
+	AuthMethodOAuth    AuthMethod = "oauth"
+	AuthMethodWebAuthn AuthMethod = "webauthn"
+)
+
+func (m AuthMethod) Valid() bool {
+	switch m {
+	case AuthMethodPassword, AuthMethodOTP, AuthMethodOAuth, AuthMethodWebAuthn:
+		return true
+	default:
+		return false
+	}
+}
+
+// normaliseAuthMethods validates and de-duplicates a method set, preserving
+// first-seen order. It rejects an empty set and any invalid method.
+func normaliseAuthMethods(methods []AuthMethod) ([]AuthMethod, error) {
+	if len(methods) == 0 {
+		return nil, ErrNoAuthMethod
+	}
+	out := make([]AuthMethod, 0, len(methods))
+	for _, m := range methods {
+		if !m.Valid() {
+			return nil, fmt.Errorf("%w: %q", ErrInvalidAuthMethod, m)
+		}
+		if !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +220,7 @@ type Session struct {
 	tokenHash TokenHash
 	status    SessionStatus
 	authLevel AuthLevel
+	amr       []AuthMethod // methods that produced authLevel (set semantics)
 	device    DeviceInfo
 
 	issuedAt   time.Time
@@ -192,6 +240,7 @@ func NewSession(
 	userID UserID,
 	tokenHash TokenHash,
 	authLevel AuthLevel,
+	methods []AuthMethod,
 	device DeviceInfo,
 	idleTTL, absoluteTTL time.Duration,
 ) (*Session, error) {
@@ -203,6 +252,10 @@ func NewSession(
 	}
 	if !authLevel.Valid() {
 		return nil, fmt.Errorf("%w: %d", ErrInvalidAuthLevel, authLevel)
+	}
+	amr, err := normaliseAuthMethods(methods)
+	if err != nil {
+		return nil, err
 	}
 	if idleTTL <= 0 || absoluteTTL <= 0 || idleTTL > absoluteTTL {
 		return nil, ErrInvalidTTL
@@ -216,6 +269,7 @@ func NewSession(
 		tokenHash:  tokenHash,
 		status:     SessionActive,
 		authLevel:  authLevel,
+		amr:        amr,
 		device:     device,
 		issuedAt:   now,
 		absExpiry:  absExpiry,
@@ -233,6 +287,7 @@ func ReconstituteSession(
 	tokenHash TokenHash,
 	status SessionStatus,
 	authLevel AuthLevel,
+	amr []AuthMethod,
 	device DeviceInfo,
 	issuedAt, absExpiry, idleExpiry time.Time,
 	idleTTL time.Duration,
@@ -246,6 +301,7 @@ func ReconstituteSession(
 		tokenHash:  tokenHash,
 		status:     status,
 		authLevel:  authLevel,
+		amr:        slices.Clone(amr),
 		device:     device,
 		issuedAt:   issuedAt,
 		absExpiry:  absExpiry,
@@ -259,17 +315,24 @@ func ReconstituteSession(
 
 // --- getters ---------------------------------------------------------------
 
-func (s *Session) ID() SessionID             { return s.id }
-func (s *Session) UserID() UserID            { return s.userID }
-func (s *Session) TokenHash() TokenHash      { return s.tokenHash }
-func (s *Session) Status() SessionStatus     { return s.status }
-func (s *Session) AuthLevel() AuthLevel      { return s.authLevel }
-func (s *Session) Device() DeviceInfo        { return s.device }
-func (s *Session) IssuedAt() time.Time       { return s.issuedAt }
-func (s *Session) AbsoluteExpiry() time.Time { return s.absExpiry }
-func (s *Session) IdleExpiry() time.Time     { return s.idleExpiry }
-func (s *Session) LastSeenAt() time.Time     { return s.lastSeenAt }
-func (s *Session) Reason() string            { return s.reason }
+func (s *Session) ID() SessionID         { return s.id }
+func (s *Session) UserID() UserID        { return s.userID }
+func (s *Session) TokenHash() TokenHash  { return s.tokenHash }
+func (s *Session) Status() SessionStatus { return s.status }
+func (s *Session) AuthLevel() AuthLevel  { return s.authLevel }
+func (s *Session) Device() DeviceInfo    { return s.device }
+
+// AMR returns a copy of the authentication methods used; the internal slice is
+// not exposed.
+func (s *Session) AMR() []AuthMethod { return slices.Clone(s.amr) }
+
+// UsedMethod reports whether method m was used to authenticate this session.
+func (s *Session) UsedMethod(m AuthMethod) bool { return slices.Contains(s.amr, m) }
+func (s *Session) IssuedAt() time.Time          { return s.issuedAt }
+func (s *Session) AbsoluteExpiry() time.Time    { return s.absExpiry }
+func (s *Session) IdleExpiry() time.Time        { return s.idleExpiry }
+func (s *Session) LastSeenAt() time.Time        { return s.lastSeenAt }
+func (s *Session) Reason() string               { return s.reason }
 
 // RevokedAt returns the revocation time and whether the session was revoked.
 func (s *Session) RevokedAt() (time.Time, bool) {
@@ -335,12 +398,17 @@ func (s *Session) Expire() error {
 	return nil
 }
 
-// StepUp raises the session's assurance level (e.g. aal1 -> aal2 after MFA).
-// It only ever raises: equal level is a no-op, lower level is rejected. Fails
-// on a non-active session.
-func (s *Session) StepUp(level AuthLevel) error {
+// StepUp raises the session's assurance level (e.g. aal1 -> aal2 after MFA) and
+// records the method that proved it. A step-up always presents a new factor, so
+// the method is required and appended to the amr set (deduplicated). The level
+// only ever raises: equal level keeps the level but still records the method,
+// lower level is rejected. Fails on a non-active session or invalid inputs.
+func (s *Session) StepUp(level AuthLevel, method AuthMethod) error {
 	if !level.Valid() {
 		return fmt.Errorf("%w: %d", ErrInvalidAuthLevel, level)
+	}
+	if !method.Valid() {
+		return fmt.Errorf("%w: %q", ErrInvalidAuthMethod, method)
 	}
 	if !s.IsActive(time.Now().UTC()) {
 		return ErrSessionNotActive
@@ -348,8 +416,8 @@ func (s *Session) StepUp(level AuthLevel) error {
 	if level < s.authLevel {
 		return ErrAALNotRaised
 	}
-	if level == s.authLevel {
-		return nil
+	if !slices.Contains(s.amr, method) {
+		s.amr = append(s.amr, method)
 	}
 	s.authLevel = level
 	return nil

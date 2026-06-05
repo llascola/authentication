@@ -31,6 +31,7 @@ func mustSession(t *testing.T) *domain.Session {
 		mustUserID(t),
 		mustTokenHash(t, []byte("token-hash")),
 		domain.AAL1,
+		[]domain.AuthMethod{domain.AuthMethodPassword},
 		domain.DeviceInfo{},
 		testIdleTTL, testAbsTTL,
 	)
@@ -164,6 +165,9 @@ func TestNewSession(t *testing.T) {
 		if _, ok := s.RevokedAt(); ok {
 			t.Error("new session should not be revoked")
 		}
+		if !s.UsedMethod(domain.AuthMethodPassword) {
+			t.Errorf("amr not seeded: %v", s.AMR())
+		}
 	})
 
 	uid := domain.NewUserID()
@@ -186,7 +190,7 @@ func TestNewSession(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := domain.NewSession(tc.userID, tc.tokenHash, tc.level, domain.DeviceInfo{}, tc.idle, tc.abs)
+			_, err := domain.NewSession(tc.userID, tc.tokenHash, tc.level, []domain.AuthMethod{domain.AuthMethodPassword}, domain.DeviceInfo{}, tc.idle, tc.abs)
 			if !errors.Is(err, tc.wantErr) {
 				t.Errorf("err = %v, want %v", err, tc.wantErr)
 			}
@@ -198,7 +202,7 @@ func TestNewSessionIdleCappedAtAbsolute(t *testing.T) {
 	// idleTTL == absoluteTTL: idle deadline must be clamped to the absolute cap.
 	s, err := domain.NewSession(
 		mustUserID(t), mustTokenHash(t, []byte("h")),
-		domain.AAL1, domain.DeviceInfo{},
+		domain.AAL1, []domain.AuthMethod{domain.AuthMethodPassword}, domain.DeviceInfo{},
 		testAbsTTL, testAbsTTL,
 	)
 	if err != nil {
@@ -206,6 +210,72 @@ func TestNewSessionIdleCappedAtAbsolute(t *testing.T) {
 	}
 	if !s.IdleExpiry().Equal(s.AbsoluteExpiry()) {
 		t.Error("idleExpiry not capped at absExpiry when idleTTL == absoluteTTL")
+	}
+}
+
+// --- AuthMethod / amr ------------------------------------------------------
+
+func TestAuthMethodValid(t *testing.T) {
+	for _, m := range []domain.AuthMethod{
+		domain.AuthMethodPassword, domain.AuthMethodOTP, domain.AuthMethodOAuth, domain.AuthMethodWebAuthn,
+	} {
+		if !m.Valid() {
+			t.Errorf("%q should be valid", m)
+		}
+	}
+	if domain.AuthMethod("face").Valid() {
+		t.Error("unknown method reported valid")
+	}
+}
+
+func TestNewSessionAMR(t *testing.T) {
+	mk := func(methods []domain.AuthMethod) (*domain.Session, error) {
+		return domain.NewSession(
+			mustUserID(t), mustTokenHash(t, []byte("h")),
+			domain.AAL2, methods, domain.DeviceInfo{},
+			testIdleTTL, testAbsTTL,
+		)
+	}
+
+	t.Run("seeds and dedupes preserving order", func(t *testing.T) {
+		s, err := mk([]domain.AuthMethod{domain.AuthMethodPassword, domain.AuthMethodOTP, domain.AuthMethodPassword})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := s.AMR()
+		want := []domain.AuthMethod{domain.AuthMethodPassword, domain.AuthMethodOTP}
+		if len(got) != len(want) {
+			t.Fatalf("amr = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("amr[%d] = %v, want %v", i, got[i], want[i])
+			}
+		}
+	})
+
+	t.Run("empty methods rejected", func(t *testing.T) {
+		if _, err := mk(nil); !errors.Is(err, domain.ErrNoAuthMethod) {
+			t.Errorf("err = %v, want ErrNoAuthMethod", err)
+		}
+	})
+
+	t.Run("invalid method rejected", func(t *testing.T) {
+		if _, err := mk([]domain.AuthMethod{domain.AuthMethod("face")}); !errors.Is(err, domain.ErrInvalidAuthMethod) {
+			t.Errorf("err = %v, want ErrInvalidAuthMethod", err)
+		}
+	})
+}
+
+func TestSessionAMRGetterIsCopy(t *testing.T) {
+	s := mustSession(t)
+	got := s.AMR()
+	if len(got) == 0 {
+		t.Fatal("expected seeded amr")
+	}
+	got[0] = domain.AuthMethodWebAuthn // mutate returned slice
+	if s.UsedMethod(domain.AuthMethodWebAuthn) {
+		t.Error("mutating returned slice leaked into aggregate")
 	}
 }
 
@@ -321,37 +391,51 @@ func TestSessionExpire(t *testing.T) {
 // --- StepUp ----------------------------------------------------------------
 
 func TestSessionStepUp(t *testing.T) {
-	t.Run("raise aal1 -> aal2", func(t *testing.T) {
+	t.Run("raise aal1 -> aal2 records method", func(t *testing.T) {
 		s := mustSession(t)
-		if err := s.StepUp(domain.AAL2); err != nil {
+		if err := s.StepUp(domain.AAL2, domain.AuthMethodOTP); err != nil {
 			t.Fatalf("StepUp: %v", err)
 		}
 		if s.AuthLevel() != domain.AAL2 {
 			t.Errorf("authLevel = %v, want aal2", s.AuthLevel())
 		}
+		if !s.UsedMethod(domain.AuthMethodOTP) || !s.UsedMethod(domain.AuthMethodPassword) {
+			t.Errorf("amr = %v, want pwd+otp", s.AMR())
+		}
 	})
 
-	t.Run("equal level is no-op", func(t *testing.T) {
+	t.Run("equal level keeps level, records method, dedupes", func(t *testing.T) {
 		s := mustSession(t)
-		if err := s.StepUp(domain.AAL1); err != nil {
+		// pwd already in amr from creation; re-presenting it must not duplicate.
+		if err := s.StepUp(domain.AAL1, domain.AuthMethodPassword); err != nil {
 			t.Errorf("equal StepUp err = %v, want nil", err)
+		}
+		if len(s.AMR()) != 1 {
+			t.Errorf("amr = %v, want deduped single pwd", s.AMR())
 		}
 	})
 
 	t.Run("lowering rejected", func(t *testing.T) {
 		s := mustSession(t)
-		if err := s.StepUp(domain.AAL2); err != nil {
+		if err := s.StepUp(domain.AAL2, domain.AuthMethodOTP); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.StepUp(domain.AAL1); !errors.Is(err, domain.ErrAALNotRaised) {
+		if err := s.StepUp(domain.AAL1, domain.AuthMethodPassword); !errors.Is(err, domain.ErrAALNotRaised) {
 			t.Errorf("err = %v, want ErrAALNotRaised", err)
 		}
 	})
 
 	t.Run("invalid level rejected", func(t *testing.T) {
 		s := mustSession(t)
-		if err := s.StepUp(domain.AuthLevel(0)); !errors.Is(err, domain.ErrInvalidAuthLevel) {
+		if err := s.StepUp(domain.AuthLevel(0), domain.AuthMethodOTP); !errors.Is(err, domain.ErrInvalidAuthLevel) {
 			t.Errorf("err = %v, want ErrInvalidAuthLevel", err)
+		}
+	})
+
+	t.Run("invalid method rejected", func(t *testing.T) {
+		s := mustSession(t)
+		if err := s.StepUp(domain.AAL2, domain.AuthMethod("face")); !errors.Is(err, domain.ErrInvalidAuthMethod) {
+			t.Errorf("err = %v, want ErrInvalidAuthMethod", err)
 		}
 	})
 
@@ -360,7 +444,7 @@ func TestSessionStepUp(t *testing.T) {
 		if err := s.Revoke("x"); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.StepUp(domain.AAL2); !errors.Is(err, domain.ErrSessionNotActive) {
+		if err := s.StepUp(domain.AAL2, domain.AuthMethodOTP); !errors.Is(err, domain.ErrSessionNotActive) {
 			t.Errorf("err = %v, want ErrSessionNotActive", err)
 		}
 	})
@@ -377,13 +461,18 @@ func TestReconstituteSession(t *testing.T) {
 
 	s := domain.ReconstituteSession(
 		id, uid, hash,
-		domain.SessionRevoked, domain.AAL2, domain.DeviceInfo{},
+		domain.SessionRevoked, domain.AAL2,
+		[]domain.AuthMethod{domain.AuthMethodPassword, domain.AuthMethodOTP},
+		domain.DeviceInfo{},
 		issued, issued.Add(testAbsTTL), issued.Add(testIdleTTL), testIdleTTL,
 		issued, &revoked, "compromised",
 	)
 
 	if s.ID() != id || s.UserID() != uid || s.AuthLevel() != domain.AAL2 {
 		t.Error("reconstitute did not preserve core fields")
+	}
+	if !s.UsedMethod(domain.AuthMethodPassword) || !s.UsedMethod(domain.AuthMethodOTP) {
+		t.Errorf("reconstitute did not preserve amr: %v", s.AMR())
 	}
 	if s.Status() != domain.SessionRevoked || s.Reason() != "compromised" {
 		t.Error("reconstitute did not preserve status/reason")
@@ -400,7 +489,8 @@ func reconstituteExpired(t *testing.T) *domain.Session {
 	past := time.Now().UTC().Add(-testAbsTTL - time.Hour)
 	return domain.ReconstituteSession(
 		domain.NewSessionID(), domain.NewUserID(), mustTokenHash(t, []byte("h")),
-		domain.SessionActive, domain.AAL1, domain.DeviceInfo{},
+		domain.SessionActive, domain.AAL1,
+		[]domain.AuthMethod{domain.AuthMethodPassword}, domain.DeviceInfo{},
 		past, past.Add(testAbsTTL), past.Add(testIdleTTL), testIdleTTL,
 		past, nil, "",
 	)

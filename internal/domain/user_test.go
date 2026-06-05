@@ -388,6 +388,134 @@ func TestRoleManagement(t *testing.T) {
 	}
 }
 
+// --- Lockout ---------------------------------------------------------------
+
+func TestUserLockout(t *testing.T) {
+	t.Run("failed logins increment counter", func(t *testing.T) {
+		u := mustUser(t)
+		u.RecordFailedLogin()
+		u.RecordFailedLogin()
+		if u.FailedAttempts() != 2 {
+			t.Errorf("failedAttempts = %d, want 2", u.FailedAttempts())
+		}
+		if _, locked := u.LockedUntil(); locked {
+			t.Error("should not be locked below threshold")
+		}
+	})
+
+	t.Run("threshold locks and resets counter", func(t *testing.T) {
+		u := mustUser(t)
+		for range 5 { // maxFailedLogins
+			u.RecordFailedLogin()
+		}
+		if !u.IsLocked(time.Now().UTC()) {
+			t.Error("account not locked after 5 failures")
+		}
+		if u.FailedAttempts() != 0 {
+			t.Errorf("counter not reset on lock: %d", u.FailedAttempts())
+		}
+		until, ok := u.LockedUntil()
+		if !ok || !until.After(time.Now().UTC()) {
+			t.Error("lockedUntil not set to a future deadline")
+		}
+	})
+
+	t.Run("successful login clears counter and lock", func(t *testing.T) {
+		u := mustUser(t)
+		for range 5 {
+			u.RecordFailedLogin()
+		}
+		u.RecordSuccessfulLogin()
+		if u.IsLocked(time.Now().UTC()) {
+			t.Error("still locked after successful login")
+		}
+		if u.FailedAttempts() != 0 {
+			t.Errorf("counter not cleared: %d", u.FailedAttempts())
+		}
+		if _, ok := u.LockedUntil(); ok {
+			t.Error("lockedUntil not cleared")
+		}
+	})
+}
+
+func TestUserIsLockedAutoExpires(t *testing.T) {
+	// reconstitute a user whose lock deadline is in the past: reads as unlocked
+	// without any mutation, exercising the time-derived auto-unlock.
+	past := time.Now().UTC().Add(-time.Hour)
+	u := domain.Reconstitute(
+		domain.NewUserID(), mustEmail(t, "locked@example.com"),
+		true, nil, false, domain.StatusActive, []domain.Role{domain.RoleUser},
+		false, 0, &past,
+		timeFixed(), timeFixed(),
+	)
+	if u.IsLocked(time.Now().UTC()) {
+		t.Error("expired lock should read as unlocked")
+	}
+	// boundary: exactly at the deadline is no longer locked (Before is strict).
+	if u.IsLocked(past) {
+		t.Error("at-deadline should read as unlocked")
+	}
+}
+
+// --- MFA -------------------------------------------------------------------
+
+func TestUserEnableMFA(t *testing.T) {
+	t.Run("enables with a confirmed factor", func(t *testing.T) {
+		u := mustUser(t)
+		if err := u.EnableMFA(true); err != nil {
+			t.Fatalf("EnableMFA: %v", err)
+		}
+		if !u.MFAEnabled() {
+			t.Error("mfa not enabled")
+		}
+	})
+
+	t.Run("rejected without a confirmed factor", func(t *testing.T) {
+		u := mustUser(t)
+		if err := u.EnableMFA(false); !errors.Is(err, domain.ErrNoConfirmedFactor) {
+			t.Errorf("err = %v, want ErrNoConfirmedFactor", err)
+		}
+		if u.MFAEnabled() {
+			t.Error("mfa enabled despite no factor")
+		}
+	})
+
+	t.Run("idempotent when already enabled", func(t *testing.T) {
+		u := mustUser(t)
+		if err := u.EnableMFA(true); err != nil {
+			t.Fatal(err)
+		}
+		// second call needs no factor proof and must not error.
+		if err := u.EnableMFA(false); err != nil {
+			t.Errorf("re-enable err = %v, want nil", err)
+		}
+		if !u.MFAEnabled() {
+			t.Error("mfa should stay enabled")
+		}
+	})
+}
+
+func TestUserDisableMFA(t *testing.T) {
+	t.Run("disables an enabled account", func(t *testing.T) {
+		u := mustUser(t)
+		if err := u.EnableMFA(true); err != nil {
+			t.Fatal(err)
+		}
+		u.DisableMFA()
+		if u.MFAEnabled() {
+			t.Error("mfa not disabled")
+		}
+	})
+
+	t.Run("idempotent when already disabled", func(t *testing.T) {
+		u := mustUser(t)
+		u.DisableMFA() // no-op, must not panic
+		if u.MFAEnabled() {
+			t.Error("mfa should remain disabled")
+		}
+	})
+}
+
 // --- Reconstitute ----------------------------------------------------------
 
 func TestReconstitute(t *testing.T) {
@@ -403,6 +531,7 @@ func TestReconstitute(t *testing.T) {
 		true,
 		domain.StatusActive,
 		roles,
+		false, 0, nil,
 		timeFixed(), timeFixed(),
 	)
 

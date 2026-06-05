@@ -33,6 +33,15 @@ var (
 	ErrPhoneAlreadyVerified  = errors.New("domain: phone already verified")
 	ErrPhoneNotSet           = errors.New("domain: phone not set")
 	ErrRoleNotAssigned       = errors.New("domain: role not assigned")
+	ErrNoConfirmedFactor     = errors.New("domain: cannot enable mfa without a confirmed second factor")
+)
+
+// Lockout policy. Fixed window: maxFailedLogins consecutive failures lock the
+// account for lockoutDuration, after which it auto-unlocks. A successful login
+// resets the counter.
+const (
+	maxFailedLogins = 5
+	lockoutDuration = 15 * time.Minute
 )
 
 // ---------------------------------------------------------------------------
@@ -197,8 +206,18 @@ type User struct {
 	phoneVerified bool
 	status        Status
 	roles         []Role
-	createdAt     time.Time
-	updatedAt     time.Time
+
+	mfaEnabled bool
+
+	// Lockout state. failedAttempts counts consecutive failed logins; lockedUntil
+	// is the auto-expiring lock deadline (nil = not locked). Distinct from
+	// Status: a locked account is still StatusActive — lockout is temporary and
+	// self-clearing, suspension is an explicit admin action.
+	failedAttempts int
+	lockedUntil    *time.Time
+
+	createdAt time.Time
+	updatedAt time.Time
 }
 
 // NewUser creates a fresh, pending identity from a validated email. If no roles
@@ -235,18 +254,24 @@ func Reconstitute(
 	phoneVerified bool,
 	status Status,
 	roles []Role,
+	mfaEnabled bool,
+	failedAttempts int,
+	lockedUntil *time.Time,
 	createdAt, updatedAt time.Time,
 ) *User {
 	return &User{
-		id:            id,
-		email:         email,
-		emailVerified: emailVerified,
-		phone:         phone,
-		phoneVerified: phoneVerified,
-		status:        status,
-		roles:         slices.Clone(roles),
-		createdAt:     createdAt,
-		updatedAt:     updatedAt,
+		id:             id,
+		email:          email,
+		emailVerified:  emailVerified,
+		phone:          phone,
+		phoneVerified:  phoneVerified,
+		status:         status,
+		roles:          slices.Clone(roles),
+		mfaEnabled:     mfaEnabled,
+		failedAttempts: failedAttempts,
+		lockedUntil:    lockedUntil,
+		createdAt:      createdAt,
+		updatedAt:      updatedAt,
 	}
 }
 
@@ -257,8 +282,19 @@ func (u *User) Email() Email         { return u.email }
 func (u *User) EmailVerified() bool  { return u.emailVerified }
 func (u *User) PhoneVerified() bool  { return u.phoneVerified }
 func (u *User) Status() Status       { return u.status }
+func (u *User) MFAEnabled() bool     { return u.mfaEnabled }
+func (u *User) FailedAttempts() int  { return u.failedAttempts }
 func (u *User) CreatedAt() time.Time { return u.createdAt }
 func (u *User) UpdatedAt() time.Time { return u.updatedAt }
+
+// LockedUntil returns the lock deadline and whether a lock is set. A set lock
+// may still be in the past (auto-expired); use IsLocked to test against a clock.
+func (u *User) LockedUntil() (time.Time, bool) {
+	if u.lockedUntil == nil {
+		return time.Time{}, false
+	}
+	return *u.lockedUntil, true
+}
 
 // Phone returns the phone and whether one is set.
 func (u *User) Phone() (Phone, bool) {
@@ -357,6 +393,68 @@ func (u *User) RemoveRole(r Role) error {
 	u.roles = slices.Delete(u.roles, idx, idx+1)
 	u.touch()
 	return nil
+}
+
+// --- lockout ---------------------------------------------------------------
+
+// IsLocked reports whether the account is currently locked at now. The lock
+// auto-expires: a deadline in the past reads as unlocked without any mutation.
+func (u *User) IsLocked(now time.Time) bool {
+	return u.lockedUntil != nil && now.Before(*u.lockedUntil)
+}
+
+// RecordFailedLogin increments the consecutive-failure counter and locks the
+// account once it reaches the threshold, resetting the counter so the next
+// window starts clean. Callers (the login use-case) treat a locked account the
+// same as bad credentials, never disclosing the lock, to avoid user enumeration.
+func (u *User) RecordFailedLogin() {
+	u.failedAttempts++
+	if u.failedAttempts >= maxFailedLogins {
+		until := time.Now().UTC().Add(lockoutDuration)
+		u.lockedUntil = &until
+		u.failedAttempts = 0
+	}
+	u.touch()
+}
+
+// RecordSuccessfulLogin clears the failure counter and any lock. Call on every
+// successful authentication.
+func (u *User) RecordSuccessfulLogin() {
+	u.failedAttempts = 0
+	u.lockedUntil = nil
+	u.touch()
+}
+
+// --- mfa -------------------------------------------------------------------
+
+// EnableMFA marks the account as requiring a second factor at login. The caller
+// must prove the user already owns a confirmed second factor (e.g. a confirmed
+// OTPCredential), passed as hasConfirmedFactor — credentials live in a separate
+// aggregate, so the application gathers that fact and the domain enforces the
+// rule. Enabling without a usable factor would lock the user out, so it is
+// rejected. Idempotent: enabling an already-enabled account is a no-op.
+//
+// NOTE: enabling MFA does not retroactively raise existing AAL1 sessions; any
+// "force step-up of live sessions" policy is a session/application concern.
+func (u *User) EnableMFA(hasConfirmedFactor bool) error {
+	if u.mfaEnabled {
+		return nil
+	}
+	if !hasConfirmedFactor {
+		return ErrNoConfirmedFactor
+	}
+	u.mfaEnabled = true
+	u.touch()
+	return nil
+}
+
+// DisableMFA turns off the second-factor requirement. Idempotent.
+func (u *User) DisableMFA() {
+	if !u.mfaEnabled {
+		return
+	}
+	u.mfaEnabled = false
+	u.touch()
 }
 
 // --- internals -------------------------------------------------------------
