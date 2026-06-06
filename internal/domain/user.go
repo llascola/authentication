@@ -22,18 +22,18 @@ import (
 
 // Domain errors. Callers compare with errors.Is; wrap with %w to add context.
 var (
-	ErrEmailRequired         = errors.New("domain: email is required")
-	ErrInvalidEmail          = errors.New("domain: invalid email")
-	ErrInvalidPhone          = errors.New("domain: invalid phone number")
-	ErrInvalidUserID         = errors.New("domain: invalid user id")
-	ErrInvalidRole           = errors.New("domain: invalid role")
-	ErrInvalidStatus         = errors.New("domain: invalid status")
-	ErrStatusTransition      = errors.New("domain: illegal status transition")
-	ErrEmailAlreadyVerified  = errors.New("domain: email already verified")
-	ErrPhoneAlreadyVerified  = errors.New("domain: phone already verified")
-	ErrPhoneNotSet           = errors.New("domain: phone not set")
-	ErrRoleNotAssigned       = errors.New("domain: role not assigned")
-	ErrNoConfirmedFactor     = errors.New("domain: cannot enable mfa without a confirmed second factor")
+	ErrEmailRequired        = errors.New("domain: email is required")
+	ErrInvalidEmail         = errors.New("domain: invalid email")
+	ErrInvalidPhone         = errors.New("domain: invalid phone number")
+	ErrInvalidUserID        = errors.New("domain: invalid user id")
+	ErrInvalidRole          = errors.New("domain: invalid role")
+	ErrInvalidStatus        = errors.New("domain: invalid status")
+	ErrStatusTransition     = errors.New("domain: illegal status transition")
+	ErrEmailAlreadyVerified = errors.New("domain: email already verified")
+	ErrPhoneAlreadyVerified = errors.New("domain: phone already verified")
+	ErrPhoneNotSet          = errors.New("domain: phone not set")
+	ErrRoleNotAssigned      = errors.New("domain: role not assigned")
+	ErrNoConfirmedFactor    = errors.New("domain: cannot enable mfa without a confirmed second factor")
 )
 
 // Lockout policy. Fixed window: maxFailedLogins consecutive failures lock the

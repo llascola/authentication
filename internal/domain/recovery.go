@@ -20,8 +20,8 @@ var (
 	ErrRecoveryCodeInvalid      = errors.New("domain: invalid or already-used recovery code")
 )
 
-// maxRecoveryCodes caps a set; 10 is the common convention, the cap leaves room
-// while bounding the slice.
+// maxRecoveryCodes caps a set; 10 is the common convention, so 20 leaves room
+// while still bounding the slice.
 const maxRecoveryCodes = 20
 
 // ---------------------------------------------------------------------------

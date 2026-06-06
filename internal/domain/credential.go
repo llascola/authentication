@@ -192,6 +192,23 @@ func (c *PasswordCredential) Rotate(hash PasswordHash) error {
 	return nil
 }
 
+// ReconstitutePasswordCredential rebuilds a credential from persisted state
+// without running creation invariants. Repository/persistence layer only.
+func ReconstitutePasswordCredential(
+	id CredentialID,
+	userID UserID,
+	hash PasswordHash,
+	createdAt, updatedAt time.Time,
+) *PasswordCredential {
+	return &PasswordCredential{
+		id:        id,
+		userID:    userID,
+		hash:      hash,
+		createdAt: createdAt,
+		updatedAt: updatedAt,
+	}
+}
+
 // ---------------------------------------------------------------------------
 // OAuthCredential
 // ---------------------------------------------------------------------------
@@ -236,6 +253,24 @@ func (c *OAuthCredential) Provider() Provider   { return c.provider }
 func (c *OAuthCredential) Subject() string      { return c.subject }
 func (c *OAuthCredential) sealedCredential()    {}
 
+// ReconstituteOAuthCredential rebuilds a credential from persisted state without
+// running creation invariants. Repository/persistence layer only.
+func ReconstituteOAuthCredential(
+	id CredentialID,
+	userID UserID,
+	provider Provider,
+	subject string,
+	createdAt time.Time,
+) *OAuthCredential {
+	return &OAuthCredential{
+		id:        id,
+		userID:    userID,
+		provider:  provider,
+		subject:   subject,
+		createdAt: createdAt,
+	}
+}
+
 // ---------------------------------------------------------------------------
 // OTPCredential
 // ---------------------------------------------------------------------------
@@ -256,6 +291,7 @@ type OTPCredential struct {
 	digits    int
 	confirmed bool
 	createdAt time.Time
+	updatedAt time.Time
 }
 
 // NewOTPCredential creates an unconfirmed TOTP credential. Pass digits = 0 to
@@ -273,12 +309,14 @@ func NewOTPCredential(userID UserID, secret TOTPSecret, digits int) (*OTPCredent
 	if digits < minOTPDigits || digits > maxOTPDigits {
 		return nil, fmt.Errorf("%w: %d", ErrInvalidOTPDigits, digits)
 	}
+	now := time.Now().UTC()
 	return &OTPCredential{
 		id:        NewCredentialID(),
 		userID:    userID,
 		secret:    secret,
 		digits:    digits,
-		createdAt: time.Now().UTC(),
+		createdAt: now,
+		updatedAt: now,
 	}, nil
 }
 
@@ -286,6 +324,7 @@ func (c *OTPCredential) ID() CredentialID     { return c.id }
 func (c *OTPCredential) UserID() UserID       { return c.userID }
 func (c *OTPCredential) Type() CredentialType { return CredentialOTP }
 func (c *OTPCredential) CreatedAt() time.Time { return c.createdAt }
+func (c *OTPCredential) UpdatedAt() time.Time { return c.updatedAt }
 func (c *OTPCredential) Secret() TOTPSecret   { return c.secret }
 func (c *OTPCredential) Digits() int          { return c.digits }
 func (c *OTPCredential) Confirmed() bool      { return c.confirmed }
@@ -297,7 +336,29 @@ func (c *OTPCredential) Confirm() error {
 		return ErrOTPAlreadyConfirmed
 	}
 	c.confirmed = true
+	c.updatedAt = time.Now().UTC()
 	return nil
+}
+
+// ReconstituteOTPCredential rebuilds a credential from persisted state without
+// running creation invariants. Repository/persistence layer only.
+func ReconstituteOTPCredential(
+	id CredentialID,
+	userID UserID,
+	secret TOTPSecret,
+	digits int,
+	confirmed bool,
+	createdAt, updatedAt time.Time,
+) *OTPCredential {
+	return &OTPCredential{
+		id:        id,
+		userID:    userID,
+		secret:    secret,
+		digits:    digits,
+		confirmed: confirmed,
+		createdAt: createdAt,
+		updatedAt: updatedAt,
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -409,4 +470,25 @@ func (c *WebAuthnCredential) VerifyCounter(newCount uint32) error {
 	c.signCount = newCount
 	c.updatedAt = time.Now().UTC()
 	return nil
+}
+
+// ReconstituteWebAuthnCredential rebuilds a credential from persisted state
+// without running creation invariants. Repository/persistence layer only.
+func ReconstituteWebAuthnCredential(
+	id CredentialID,
+	userID UserID,
+	webAuthnID WebAuthnID,
+	publicKey PublicKey,
+	signCount uint32,
+	createdAt, updatedAt time.Time,
+) *WebAuthnCredential {
+	return &WebAuthnCredential{
+		id:         id,
+		userID:     userID,
+		webAuthnID: webAuthnID,
+		publicKey:  publicKey,
+		signCount:  signCount,
+		createdAt:  createdAt,
+		updatedAt:  updatedAt,
+	}
 }

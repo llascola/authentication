@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
 	"authentication/internal/domain"
 )
@@ -15,6 +16,7 @@ var (
 	_ domain.Credential = (*domain.PasswordCredential)(nil)
 	_ domain.Credential = (*domain.OAuthCredential)(nil)
 	_ domain.Credential = (*domain.OTPCredential)(nil)
+	_ domain.Credential = (*domain.WebAuthnCredential)(nil)
 )
 
 // --- helpers ---------------------------------------------------------------
@@ -199,6 +201,28 @@ func TestPasswordCredentialRotate(t *testing.T) {
 	}
 }
 
+func TestReconstitutePasswordCredential(t *testing.T) {
+	id := domain.NewCredentialID()
+	uid := mustUserID(t)
+	hash := mustPasswordHash(t, []byte("stored"))
+	created := time.Now().UTC().Add(-2 * time.Hour)
+	updated := created.Add(time.Hour)
+
+	c := domain.ReconstitutePasswordCredential(id, uid, hash, created, updated)
+	if c.ID() != id {
+		t.Errorf("id = %v, want %v", c.ID(), id)
+	}
+	if c.UserID() != uid {
+		t.Errorf("userID = %v, want %v", c.UserID(), uid)
+	}
+	if !bytes.Equal(c.Hash().Bytes(), []byte("stored")) {
+		t.Errorf("hash = %q, want stored", c.Hash().Bytes())
+	}
+	if !c.CreatedAt().Equal(created) || !c.UpdatedAt().Equal(updated) {
+		t.Errorf("timestamps = (%v, %v), want (%v, %v)", c.CreatedAt(), c.UpdatedAt(), created, updated)
+	}
+}
+
 // --- OAuthCredential -------------------------------------------------------
 
 func TestNewOAuthCredential(t *testing.T) {
@@ -239,6 +263,29 @@ func TestNewOAuthCredential(t *testing.T) {
 				t.Errorf("subject = %q, want trimmed gh-9", c.Subject())
 			}
 		})
+	}
+}
+
+func TestReconstituteOAuthCredential(t *testing.T) {
+	id := domain.NewCredentialID()
+	uid := mustUserID(t)
+	created := time.Now().UTC().Add(-time.Hour)
+
+	c := domain.ReconstituteOAuthCredential(id, uid, domain.ProviderGitHub, "gh-42", created)
+	if c.ID() != id {
+		t.Errorf("id = %v, want %v", c.ID(), id)
+	}
+	if c.UserID() != uid {
+		t.Errorf("userID = %v, want %v", c.UserID(), uid)
+	}
+	if c.Provider() != domain.ProviderGitHub {
+		t.Errorf("provider = %v, want github", c.Provider())
+	}
+	if c.Subject() != "gh-42" {
+		t.Errorf("subject = %q, want gh-42", c.Subject())
+	}
+	if !c.CreatedAt().Equal(created) {
+		t.Errorf("createdAt = %v, want %v", c.CreatedAt(), created)
 	}
 }
 
@@ -291,14 +338,46 @@ func TestOTPCredentialConfirm(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if !c.CreatedAt().Equal(c.UpdatedAt()) {
+		t.Error("createdAt and updatedAt should match on creation")
+	}
+
 	if err := c.Confirm(); err != nil {
 		t.Fatalf("Confirm: %v", err)
 	}
 	if !c.Confirmed() {
 		t.Error("not confirmed after Confirm")
 	}
+	if c.UpdatedAt().Before(c.CreatedAt()) {
+		t.Error("updatedAt went backwards after confirm")
+	}
 	if err := c.Confirm(); !errors.Is(err, domain.ErrOTPAlreadyConfirmed) {
 		t.Errorf("second confirm err = %v, want ErrOTPAlreadyConfirmed", err)
+	}
+}
+
+func TestReconstituteOTPCredential(t *testing.T) {
+	id := domain.NewCredentialID()
+	uid := mustUserID(t)
+	secret := mustTOTPSecret(t, []byte("seed"))
+	created := time.Now().UTC().Add(-3 * time.Hour)
+	updated := created.Add(time.Hour)
+
+	c := domain.ReconstituteOTPCredential(id, uid, secret, 8, true, created, updated)
+	if c.ID() != id {
+		t.Errorf("id = %v, want %v", c.ID(), id)
+	}
+	if c.UserID() != uid {
+		t.Errorf("userID = %v, want %v", c.UserID(), uid)
+	}
+	if c.Digits() != 8 {
+		t.Errorf("digits = %d, want 8", c.Digits())
+	}
+	if !c.Confirmed() {
+		t.Error("confirmed not preserved on reconstitute")
+	}
+	if !c.CreatedAt().Equal(created) || !c.UpdatedAt().Equal(updated) {
+		t.Errorf("timestamps = (%v, %v), want (%v, %v)", c.CreatedAt(), c.UpdatedAt(), created, updated)
 	}
 }
 
@@ -458,4 +537,42 @@ func TestWebAuthnVerifyCounter(t *testing.T) {
 			t.Errorf("err = %v, want ErrAuthenticatorCloned", err)
 		}
 	})
+}
+
+func TestReconstituteWebAuthnCredential(t *testing.T) {
+	id := domain.NewCredentialID()
+	uid := mustUserID(t)
+	waID := mustWebAuthnID(t, []byte("handle"))
+	pk := mustPublicKey(t, []byte("cose"))
+	created := time.Now().UTC().Add(-4 * time.Hour)
+	updated := created.Add(2 * time.Hour)
+
+	c := domain.ReconstituteWebAuthnCredential(id, uid, waID, pk, 42, created, updated)
+	if c.ID() != id {
+		t.Errorf("id = %v, want %v", c.ID(), id)
+	}
+	if c.UserID() != uid {
+		t.Errorf("userID = %v, want %v", c.UserID(), uid)
+	}
+	if !bytes.Equal(c.WebAuthnID().Bytes(), []byte("handle")) {
+		t.Errorf("webAuthnID = %q, want handle", c.WebAuthnID().Bytes())
+	}
+	if !bytes.Equal(c.PublicKey().Bytes(), []byte("cose")) {
+		t.Errorf("publicKey = %q, want cose", c.PublicKey().Bytes())
+	}
+	if c.SignCount() != 42 {
+		t.Errorf("signCount = %d, want 42", c.SignCount())
+	}
+	if !c.CreatedAt().Equal(created) || !c.UpdatedAt().Equal(updated) {
+		t.Errorf("timestamps = (%v, %v), want (%v, %v)", c.CreatedAt(), c.UpdatedAt(), created, updated)
+	}
+
+	// reconstituted signCount feeds clone detection: an advance past it works,
+	// a repeat is rejected.
+	if err := c.VerifyCounter(43); err != nil {
+		t.Errorf("advance past reconstituted count: %v", err)
+	}
+	if err := c.VerifyCounter(42); !errors.Is(err, domain.ErrAuthenticatorCloned) {
+		t.Errorf("err = %v, want ErrAuthenticatorCloned", err)
+	}
 }
