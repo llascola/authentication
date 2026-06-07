@@ -12,6 +12,10 @@ func timeFixed() time.Time {
 	return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 }
 
+// later returns the fixed base time advanced by d, for asserting that a mutator
+// stamped the exact instant it was given.
+func later(d time.Duration) time.Time { return timeFixed().Add(d) }
+
 // --- helpers ---------------------------------------------------------------
 
 func mustEmail(t *testing.T, raw string) domain.Email {
@@ -25,7 +29,7 @@ func mustEmail(t *testing.T, raw string) domain.Email {
 
 func mustUser(t *testing.T, roles ...domain.Role) *domain.User {
 	t.Helper()
-	u, err := domain.NewUser(mustEmail(t, "user@example.com"), roles...)
+	u, err := domain.NewUser(timeFixed(), mustEmail(t, "user@example.com"), roles...)
 	if err != nil {
 		t.Fatalf("NewUser: unexpected error: %v", err)
 	}
@@ -148,8 +152,9 @@ func TestNewUser(t *testing.T) {
 		if roles := u.Roles(); len(roles) != 1 || roles[0] != domain.RoleUser {
 			t.Errorf("roles = %v, want [user]", roles)
 		}
-		if !u.CreatedAt().Equal(u.UpdatedAt()) {
-			t.Error("createdAt and updatedAt should match on creation")
+		// timestamps are exactly the creation instant we passed.
+		if !u.CreatedAt().Equal(timeFixed()) || !u.UpdatedAt().Equal(timeFixed()) {
+			t.Errorf("timestamps = (%v, %v), want both %v", u.CreatedAt(), u.UpdatedAt(), timeFixed())
 		}
 		if _, ok := u.Phone(); ok {
 			t.Error("new user should have no phone")
@@ -157,7 +162,7 @@ func TestNewUser(t *testing.T) {
 	})
 
 	t.Run("empty email rejected", func(t *testing.T) {
-		if _, err := domain.NewUser(domain.Email{}); !errors.Is(err, domain.ErrEmailRequired) {
+		if _, err := domain.NewUser(timeFixed(), domain.Email{}); !errors.Is(err, domain.ErrEmailRequired) {
 			t.Errorf("err = %v, want ErrEmailRequired", err)
 		}
 	})
@@ -170,7 +175,7 @@ func TestNewUser(t *testing.T) {
 	})
 
 	t.Run("invalid role rejected", func(t *testing.T) {
-		_, err := domain.NewUser(mustEmail(t, "a@b.com"), domain.Role("superuser"))
+		_, err := domain.NewUser(timeFixed(), mustEmail(t, "a@b.com"), domain.Role("superuser"))
 		if !errors.Is(err, domain.ErrInvalidRole) {
 			t.Errorf("err = %v, want ErrInvalidRole", err)
 		}
@@ -192,9 +197,9 @@ func TestRolesGetterIsCopy(t *testing.T) {
 
 func TestVerifyEmail(t *testing.T) {
 	u := mustUser(t)
-	before := u.UpdatedAt()
 
-	if err := u.VerifyEmail(); err != nil {
+	verifiedAt := later(time.Hour)
+	if err := u.VerifyEmail(verifiedAt); err != nil {
 		t.Fatalf("VerifyEmail: %v", err)
 	}
 	if !u.EmailVerified() {
@@ -203,28 +208,29 @@ func TestVerifyEmail(t *testing.T) {
 	if u.Status() != domain.StatusActive {
 		t.Errorf("status = %v, want active (auto-promote)", u.Status())
 	}
-	if u.UpdatedAt().Before(before) {
-		t.Error("updatedAt went backwards")
+	// the mutator stamped exactly the instant it was given.
+	if !u.UpdatedAt().Equal(verifiedAt) {
+		t.Errorf("updatedAt = %v, want %v", u.UpdatedAt(), verifiedAt)
 	}
 
-	if err := u.VerifyEmail(); !errors.Is(err, domain.ErrEmailAlreadyVerified) {
+	if err := u.VerifyEmail(later(2 * time.Hour)); !errors.Is(err, domain.ErrEmailAlreadyVerified) {
 		t.Errorf("second verify err = %v, want ErrEmailAlreadyVerified", err)
 	}
 }
 
 func TestVerifyEmailDoesNotPromoteNonPending(t *testing.T) {
 	u := mustUser(t)
-	if err := u.VerifyEmail(); err != nil { // pending -> active
+	if err := u.VerifyEmail(later(time.Hour)); err != nil { // pending -> active
 		t.Fatal(err)
 	}
-	if err := u.Suspend(); err != nil { // active -> suspended
+	if err := u.Suspend(later(2 * time.Hour)); err != nil { // active -> suspended
 		t.Fatal(err)
 	}
 	// changing email resets verification; re-verifying must not resurrect to active
-	if err := u.ChangeEmail(mustEmail(t, "new@example.com")); err != nil {
+	if err := u.ChangeEmail(later(3*time.Hour), mustEmail(t, "new@example.com")); err != nil {
 		t.Fatal(err)
 	}
-	if err := u.VerifyEmail(); err != nil {
+	if err := u.VerifyEmail(later(4 * time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if u.Status() != domain.StatusSuspended {
@@ -236,11 +242,12 @@ func TestVerifyEmailDoesNotPromoteNonPending(t *testing.T) {
 
 func TestChangeEmail(t *testing.T) {
 	u := mustUser(t)
-	if err := u.VerifyEmail(); err != nil {
+	if err := u.VerifyEmail(later(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := u.ChangeEmail(mustEmail(t, "fresh@example.com")); err != nil {
+	changedAt := later(2 * time.Hour)
+	if err := u.ChangeEmail(changedAt, mustEmail(t, "fresh@example.com")); err != nil {
 		t.Fatalf("ChangeEmail: %v", err)
 	}
 	if u.Email().String() != "fresh@example.com" {
@@ -249,8 +256,11 @@ func TestChangeEmail(t *testing.T) {
 	if u.EmailVerified() {
 		t.Error("verification not reset after email change")
 	}
+	if !u.UpdatedAt().Equal(changedAt) {
+		t.Errorf("updatedAt = %v, want %v", u.UpdatedAt(), changedAt)
+	}
 
-	if err := u.ChangeEmail(domain.Email{}); !errors.Is(err, domain.ErrEmailRequired) {
+	if err := u.ChangeEmail(later(3*time.Hour), domain.Email{}); !errors.Is(err, domain.ErrEmailRequired) {
 		t.Errorf("err = %v, want ErrEmailRequired", err)
 	}
 }
@@ -260,13 +270,17 @@ func TestChangeEmail(t *testing.T) {
 func TestPhoneLifecycle(t *testing.T) {
 	u := mustUser(t)
 
-	if err := u.VerifyPhone(); !errors.Is(err, domain.ErrPhoneNotSet) {
+	if err := u.VerifyPhone(later(time.Hour)); !errors.Is(err, domain.ErrPhoneNotSet) {
 		t.Errorf("verify before set err = %v, want ErrPhoneNotSet", err)
 	}
 
 	phone, _ := domain.NewPhone("+14155552671")
-	if err := u.SetPhone(phone); err != nil {
+	setAt := later(time.Hour)
+	if err := u.SetPhone(setAt, phone); err != nil {
 		t.Fatalf("SetPhone: %v", err)
+	}
+	if !u.UpdatedAt().Equal(setAt) {
+		t.Errorf("updatedAt = %v, want %v", u.UpdatedAt(), setAt)
 	}
 	got, ok := u.Phone()
 	if !ok || got.String() != "+14155552671" {
@@ -276,26 +290,26 @@ func TestPhoneLifecycle(t *testing.T) {
 		t.Error("phone should be unverified after SetPhone")
 	}
 
-	if err := u.VerifyPhone(); err != nil {
+	if err := u.VerifyPhone(later(2 * time.Hour)); err != nil {
 		t.Fatalf("VerifyPhone: %v", err)
 	}
 	if !u.PhoneVerified() {
 		t.Error("phone not verified")
 	}
-	if err := u.VerifyPhone(); !errors.Is(err, domain.ErrPhoneAlreadyVerified) {
+	if err := u.VerifyPhone(later(3 * time.Hour)); !errors.Is(err, domain.ErrPhoneAlreadyVerified) {
 		t.Errorf("re-verify err = %v, want ErrPhoneAlreadyVerified", err)
 	}
 
 	// replacing phone resets verification
 	other, _ := domain.NewPhone("+491701234567")
-	if err := u.SetPhone(other); err != nil {
+	if err := u.SetPhone(later(4*time.Hour), other); err != nil {
 		t.Fatal(err)
 	}
 	if u.PhoneVerified() {
 		t.Error("verification not reset after phone replace")
 	}
 
-	if err := u.SetPhone(domain.Phone{}); !errors.Is(err, domain.ErrInvalidPhone) {
+	if err := u.SetPhone(later(5*time.Hour), domain.Phone{}); !errors.Is(err, domain.ErrInvalidPhone) {
 		t.Errorf("set zero phone err = %v, want ErrInvalidPhone", err)
 	}
 }
@@ -308,9 +322,9 @@ func TestStatusTransitions(t *testing.T) {
 		want    domain.Status
 		wantErr error
 	}
-	activate := func(u *domain.User) error { return u.Activate() }
-	suspend := func(u *domain.User) error { return u.Suspend() }
-	deactivate := func(u *domain.User) error { return u.Deactivate() }
+	activate := func(u *domain.User) error { return u.Activate(timeFixed()) }
+	suspend := func(u *domain.User) error { return u.Suspend(timeFixed()) }
+	deactivate := func(u *domain.User) error { return u.Deactivate(timeFixed()) }
 
 	tests := []struct {
 		name  string
@@ -357,33 +371,36 @@ func TestStatusTransitions(t *testing.T) {
 func TestRoleManagement(t *testing.T) {
 	u := mustUser(t) // starts [user]
 
-	if err := u.AddRole(domain.RoleAdmin); err != nil {
+	if err := u.AddRole(later(time.Hour), domain.RoleAdmin); err != nil {
 		t.Fatalf("AddRole: %v", err)
 	}
 	if !u.HasRole(domain.RoleAdmin) {
 		t.Error("admin role not added")
 	}
+	if !u.UpdatedAt().Equal(later(time.Hour)) {
+		t.Errorf("updatedAt = %v, want %v", u.UpdatedAt(), later(time.Hour))
+	}
 
 	// adding existing role is a no-op, no duplicate
-	if err := u.AddRole(domain.RoleAdmin); err != nil {
+	if err := u.AddRole(later(2*time.Hour), domain.RoleAdmin); err != nil {
 		t.Fatalf("AddRole(dup): %v", err)
 	}
 	if len(u.Roles()) != 2 {
 		t.Errorf("roles = %v, want 2", u.Roles())
 	}
 
-	if err := u.AddRole(domain.Role("bogus")); !errors.Is(err, domain.ErrInvalidRole) {
+	if err := u.AddRole(later(2*time.Hour), domain.Role("bogus")); !errors.Is(err, domain.ErrInvalidRole) {
 		t.Errorf("err = %v, want ErrInvalidRole", err)
 	}
 
-	if err := u.RemoveRole(domain.RoleAdmin); err != nil {
+	if err := u.RemoveRole(later(3*time.Hour), domain.RoleAdmin); err != nil {
 		t.Fatalf("RemoveRole: %v", err)
 	}
 	if u.HasRole(domain.RoleAdmin) {
 		t.Error("admin role not removed")
 	}
 
-	if err := u.RemoveRole(domain.RoleAdmin); !errors.Is(err, domain.ErrRoleNotAssigned) {
+	if err := u.RemoveRole(later(4*time.Hour), domain.RoleAdmin); !errors.Is(err, domain.ErrRoleNotAssigned) {
 		t.Errorf("err = %v, want ErrRoleNotAssigned", err)
 	}
 }
@@ -393,8 +410,8 @@ func TestRoleManagement(t *testing.T) {
 func TestUserLockout(t *testing.T) {
 	t.Run("failed logins increment counter", func(t *testing.T) {
 		u := mustUser(t)
-		u.RecordFailedLogin()
-		u.RecordFailedLogin()
+		u.RecordFailedLogin(later(time.Minute))
+		u.RecordFailedLogin(later(2 * time.Minute))
 		if u.FailedAttempts() != 2 {
 			t.Errorf("failedAttempts = %d, want 2", u.FailedAttempts())
 		}
@@ -403,30 +420,60 @@ func TestUserLockout(t *testing.T) {
 		}
 	})
 
-	t.Run("threshold locks and resets counter", func(t *testing.T) {
+	t.Run("threshold locks for exactly lockoutDuration and resets counter", func(t *testing.T) {
 		u := mustUser(t)
-		for range 5 { // maxFailedLogins
-			u.RecordFailedLogin()
-		}
-		if !u.IsLocked(time.Now().UTC()) {
-			t.Error("account not locked after 5 failures")
+		var lockAt time.Time
+		for i := range 5 { // maxFailedLogins
+			lockAt = later(time.Duration(i) * time.Minute)
+			u.RecordFailedLogin(lockAt)
 		}
 		if u.FailedAttempts() != 0 {
 			t.Errorf("counter not reset on lock: %d", u.FailedAttempts())
 		}
 		until, ok := u.LockedUntil()
-		if !ok || !until.After(time.Now().UTC()) {
-			t.Error("lockedUntil not set to a future deadline")
+		if !ok {
+			t.Fatal("lockedUntil not set after threshold")
+		}
+		// lock deadline is exactly the locking instant + 15m (lockoutDuration).
+		wantUntil := lockAt.Add(15 * time.Minute)
+		if !until.Equal(wantUntil) {
+			t.Errorf("lockedUntil = %v, want %v", until, wantUntil)
+		}
+		// locked strictly before the deadline, unlocked at and after it.
+		if !u.IsLocked(wantUntil.Add(-time.Second)) {
+			t.Error("should be locked one second before deadline")
+		}
+		if u.IsLocked(wantUntil) {
+			t.Error("should be unlocked exactly at deadline (Before is strict)")
+		}
+		if u.IsLocked(wantUntil.Add(time.Second)) {
+			t.Error("should be unlocked after deadline")
+		}
+	})
+
+	t.Run("re-locks after a fresh window of failures", func(t *testing.T) {
+		u := mustUser(t)
+		for i := range 5 {
+			u.RecordFailedLogin(later(time.Duration(i) * time.Minute))
+		}
+		first, _ := u.LockedUntil()
+		// counter reset to 0 on lock; a fresh batch must lock again at a new deadline.
+		for i := range 5 {
+			u.RecordFailedLogin(later(time.Hour + time.Duration(i)*time.Minute))
+		}
+		second, ok := u.LockedUntil()
+		if !ok || !second.After(first) {
+			t.Errorf("re-lock deadline = %v, want after first %v", second, first)
 		}
 	})
 
 	t.Run("successful login clears counter and lock", func(t *testing.T) {
 		u := mustUser(t)
-		for range 5 {
-			u.RecordFailedLogin()
+		for i := range 5 {
+			u.RecordFailedLogin(later(time.Duration(i) * time.Minute))
 		}
-		u.RecordSuccessfulLogin()
-		if u.IsLocked(time.Now().UTC()) {
+		u.RecordSuccessfulLogin(later(time.Hour))
+		if u.IsLocked(later(time.Hour)) {
 			t.Error("still locked after successful login")
 		}
 		if u.FailedAttempts() != 0 {
@@ -441,14 +488,14 @@ func TestUserLockout(t *testing.T) {
 func TestUserIsLockedAutoExpires(t *testing.T) {
 	// reconstitute a user whose lock deadline is in the past: reads as unlocked
 	// without any mutation, exercising the time-derived auto-unlock.
-	past := time.Now().UTC().Add(-time.Hour)
+	past := timeFixed().Add(-time.Hour)
 	u := domain.Reconstitute(
 		domain.NewUserID(), mustEmail(t, "locked@example.com"),
 		true, nil, false, domain.StatusActive, []domain.Role{domain.RoleUser},
 		false, 0, &past,
 		timeFixed(), timeFixed(),
 	)
-	if u.IsLocked(time.Now().UTC()) {
+	if u.IsLocked(timeFixed()) {
 		t.Error("expired lock should read as unlocked")
 	}
 	// boundary: exactly at the deadline is no longer locked (Before is strict).
@@ -462,17 +509,21 @@ func TestUserIsLockedAutoExpires(t *testing.T) {
 func TestUserEnableMFA(t *testing.T) {
 	t.Run("enables with a confirmed factor", func(t *testing.T) {
 		u := mustUser(t)
-		if err := u.EnableMFA(true); err != nil {
+		enabledAt := later(time.Hour)
+		if err := u.EnableMFA(enabledAt, true); err != nil {
 			t.Fatalf("EnableMFA: %v", err)
 		}
 		if !u.MFAEnabled() {
 			t.Error("mfa not enabled")
 		}
+		if !u.UpdatedAt().Equal(enabledAt) {
+			t.Errorf("updatedAt = %v, want %v", u.UpdatedAt(), enabledAt)
+		}
 	})
 
 	t.Run("rejected without a confirmed factor", func(t *testing.T) {
 		u := mustUser(t)
-		if err := u.EnableMFA(false); !errors.Is(err, domain.ErrNoConfirmedFactor) {
+		if err := u.EnableMFA(later(time.Hour), false); !errors.Is(err, domain.ErrNoConfirmedFactor) {
 			t.Errorf("err = %v, want ErrNoConfirmedFactor", err)
 		}
 		if u.MFAEnabled() {
@@ -482,11 +533,11 @@ func TestUserEnableMFA(t *testing.T) {
 
 	t.Run("idempotent when already enabled", func(t *testing.T) {
 		u := mustUser(t)
-		if err := u.EnableMFA(true); err != nil {
+		if err := u.EnableMFA(later(time.Hour), true); err != nil {
 			t.Fatal(err)
 		}
 		// second call needs no factor proof and must not error.
-		if err := u.EnableMFA(false); err != nil {
+		if err := u.EnableMFA(later(2*time.Hour), false); err != nil {
 			t.Errorf("re-enable err = %v, want nil", err)
 		}
 		if !u.MFAEnabled() {
@@ -498,10 +549,10 @@ func TestUserEnableMFA(t *testing.T) {
 func TestUserDisableMFA(t *testing.T) {
 	t.Run("disables an enabled account", func(t *testing.T) {
 		u := mustUser(t)
-		if err := u.EnableMFA(true); err != nil {
+		if err := u.EnableMFA(later(time.Hour), true); err != nil {
 			t.Fatal(err)
 		}
-		u.DisableMFA()
+		u.DisableMFA(later(2 * time.Hour))
 		if u.MFAEnabled() {
 			t.Error("mfa not disabled")
 		}
@@ -509,7 +560,7 @@ func TestUserDisableMFA(t *testing.T) {
 
 	t.Run("idempotent when already disabled", func(t *testing.T) {
 		u := mustUser(t)
-		u.DisableMFA() // no-op, must not panic
+		u.DisableMFA(later(time.Hour)) // no-op, must not panic
 		if u.MFAEnabled() {
 			t.Error("mfa should remain disabled")
 		}
@@ -546,5 +597,30 @@ func TestReconstitute(t *testing.T) {
 	roles[0] = domain.RoleUser
 	if !u.HasRole(domain.RoleAdmin) {
 		t.Error("Reconstitute did not clone roles slice")
+	}
+}
+
+func TestReconstituteIsolatesOptionalPointers(t *testing.T) {
+	phone, _ := domain.NewPhone("+14155552671")
+	lock := timeFixed().Add(time.Hour)
+
+	u := domain.Reconstitute(
+		domain.NewUserID(), mustEmail(t, "a@b.com"),
+		true, &phone, true, domain.StatusActive,
+		[]domain.Role{domain.RoleUser}, false, 0, &lock,
+		timeFixed(), timeFixed(),
+	)
+
+	// Mutate the caller-owned variables whose addresses were handed in. A clone
+	// inside Reconstitute means the aggregate keeps the values it was built with.
+	other, _ := domain.NewPhone("+491701234567")
+	phone = other
+	lock = lock.Add(-100 * time.Hour)
+
+	if got, ok := u.Phone(); !ok || got.String() != "+14155552671" {
+		t.Errorf("phone aliased caller pointer: got %v after mutation", got)
+	}
+	if until, ok := u.LockedUntil(); !ok || !until.Equal(timeFixed().Add(time.Hour)) {
+		t.Errorf("lockedUntil aliased caller pointer: got %v after mutation", until)
 	}
 }

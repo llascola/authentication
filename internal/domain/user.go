@@ -222,8 +222,8 @@ type User struct {
 
 // NewUser creates a fresh, pending identity from a validated email. If no roles
 // are given it defaults to {RoleUser}. Use VerifyEmail / Activate to progress
-// the lifecycle.
-func NewUser(email Email, roles ...Role) (*User, error) {
+// the lifecycle. now is the creation instant; callers pass UTC.
+func NewUser(now time.Time, email Email, roles ...Role) (*User, error) {
 	if email.IsZero() {
 		return nil, ErrEmailRequired
 	}
@@ -232,7 +232,6 @@ func NewUser(email Email, roles ...Role) (*User, error) {
 		return nil, err
 	}
 
-	now := time.Now().UTC()
 	return &User{
 		id:        NewUserID(),
 		email:     email,
@@ -263,13 +262,13 @@ func Reconstitute(
 		id:             id,
 		email:          email,
 		emailVerified:  emailVerified,
-		phone:          phone,
+		phone:          clonePtr(phone),
 		phoneVerified:  phoneVerified,
 		status:         status,
 		roles:          slices.Clone(roles),
 		mfaEnabled:     mfaEnabled,
 		failedAttempts: failedAttempts,
-		lockedUntil:    lockedUntil,
+		lockedUntil:    clonePtr(lockedUntil),
 		createdAt:      createdAt,
 		updatedAt:      updatedAt,
 	}
@@ -313,19 +312,19 @@ func (u *User) HasRole(r Role) bool { return slices.Contains(u.roles, r) }
 // --- behaviour -------------------------------------------------------------
 
 // ChangeEmail replaces the email and resets verification.
-func (u *User) ChangeEmail(email Email) error {
+func (u *User) ChangeEmail(now time.Time, email Email) error {
 	if email.IsZero() {
 		return ErrEmailRequired
 	}
 	u.email = email
 	u.emailVerified = false
-	u.touch()
+	u.touch(now)
 	return nil
 }
 
 // VerifyEmail marks the email as verified. A pending account is promoted to
 // active as a side effect of first verification.
-func (u *User) VerifyEmail() error {
+func (u *User) VerifyEmail(now time.Time) error {
 	if u.emailVerified {
 		return ErrEmailAlreadyVerified
 	}
@@ -333,24 +332,24 @@ func (u *User) VerifyEmail() error {
 	if u.status == StatusPending {
 		u.status = StatusActive
 	}
-	u.touch()
+	u.touch(now)
 	return nil
 }
 
 // SetPhone attaches or replaces the phone number and resets its verification.
-func (u *User) SetPhone(phone Phone) error {
+func (u *User) SetPhone(now time.Time, phone Phone) error {
 	if phone.IsZero() {
 		return ErrInvalidPhone
 	}
 	p := phone
 	u.phone = &p
 	u.phoneVerified = false
-	u.touch()
+	u.touch(now)
 	return nil
 }
 
 // VerifyPhone marks the attached phone as verified.
-func (u *User) VerifyPhone() error {
+func (u *User) VerifyPhone(now time.Time) error {
 	if u.phone == nil {
 		return ErrPhoneNotSet
 	}
@@ -358,21 +357,21 @@ func (u *User) VerifyPhone() error {
 		return ErrPhoneAlreadyVerified
 	}
 	u.phoneVerified = true
-	u.touch()
+	u.touch(now)
 	return nil
 }
 
 // Activate transitions the account to active.
-func (u *User) Activate() error { return u.transition(StatusActive) }
+func (u *User) Activate(now time.Time) error { return u.transition(now, StatusActive) }
 
 // Suspend transitions the account to suspended.
-func (u *User) Suspend() error { return u.transition(StatusSuspended) }
+func (u *User) Suspend(now time.Time) error { return u.transition(now, StatusSuspended) }
 
 // Deactivate transitions the account to its terminal deactivated state.
-func (u *User) Deactivate() error { return u.transition(StatusDeactivated) }
+func (u *User) Deactivate(now time.Time) error { return u.transition(now, StatusDeactivated) }
 
 // AddRole grants a role; assigning an already-held role is a no-op.
-func (u *User) AddRole(r Role) error {
+func (u *User) AddRole(now time.Time, r Role) error {
 	if !r.Valid() {
 		return fmt.Errorf("%w: %q", ErrInvalidRole, r)
 	}
@@ -380,18 +379,18 @@ func (u *User) AddRole(r Role) error {
 		return nil
 	}
 	u.roles = append(u.roles, r)
-	u.touch()
+	u.touch(now)
 	return nil
 }
 
 // RemoveRole revokes a role.
-func (u *User) RemoveRole(r Role) error {
+func (u *User) RemoveRole(now time.Time, r Role) error {
 	idx := slices.Index(u.roles, r)
 	if idx < 0 {
 		return fmt.Errorf("%w: %q", ErrRoleNotAssigned, r)
 	}
 	u.roles = slices.Delete(u.roles, idx, idx+1)
-	u.touch()
+	u.touch(now)
 	return nil
 }
 
@@ -407,22 +406,22 @@ func (u *User) IsLocked(now time.Time) bool {
 // account once it reaches the threshold, resetting the counter so the next
 // window starts clean. Callers (the login use-case) treat a locked account the
 // same as bad credentials, never disclosing the lock, to avoid user enumeration.
-func (u *User) RecordFailedLogin() {
+func (u *User) RecordFailedLogin(now time.Time) {
 	u.failedAttempts++
 	if u.failedAttempts >= maxFailedLogins {
-		until := time.Now().UTC().Add(lockoutDuration)
+		until := now.Add(lockoutDuration)
 		u.lockedUntil = &until
 		u.failedAttempts = 0
 	}
-	u.touch()
+	u.touch(now)
 }
 
 // RecordSuccessfulLogin clears the failure counter and any lock. Call on every
 // successful authentication.
-func (u *User) RecordSuccessfulLogin() {
+func (u *User) RecordSuccessfulLogin(now time.Time) {
 	u.failedAttempts = 0
 	u.lockedUntil = nil
-	u.touch()
+	u.touch(now)
 }
 
 // --- mfa -------------------------------------------------------------------
@@ -436,7 +435,7 @@ func (u *User) RecordSuccessfulLogin() {
 //
 // NOTE: enabling MFA does not retroactively raise existing AAL1 sessions; any
 // "force step-up of live sessions" policy is a session/application concern.
-func (u *User) EnableMFA(hasConfirmedFactor bool) error {
+func (u *User) EnableMFA(now time.Time, hasConfirmedFactor bool) error {
 	if u.mfaEnabled {
 		return nil
 	}
@@ -444,22 +443,22 @@ func (u *User) EnableMFA(hasConfirmedFactor bool) error {
 		return ErrNoConfirmedFactor
 	}
 	u.mfaEnabled = true
-	u.touch()
+	u.touch(now)
 	return nil
 }
 
 // DisableMFA turns off the second-factor requirement. Idempotent.
-func (u *User) DisableMFA() {
+func (u *User) DisableMFA(now time.Time) {
 	if !u.mfaEnabled {
 		return
 	}
 	u.mfaEnabled = false
-	u.touch()
+	u.touch(now)
 }
 
 // --- internals -------------------------------------------------------------
 
-func (u *User) transition(next Status) error {
+func (u *User) transition(now time.Time, next Status) error {
 	if !next.Valid() {
 		return fmt.Errorf("%w: %q", ErrInvalidStatus, next)
 	}
@@ -470,11 +469,22 @@ func (u *User) transition(next Status) error {
 		return fmt.Errorf("%w: %s -> %s", ErrStatusTransition, u.status, next)
 	}
 	u.status = next
-	u.touch()
+	u.touch(now)
 	return nil
 }
 
-func (u *User) touch() { u.updatedAt = time.Now().UTC() }
+func (u *User) touch(now time.Time) { u.updatedAt = now }
+
+// clonePtr returns a pointer to a fresh copy of *p (nil stays nil). Reconstitute
+// uses it so an aggregate never aliases a caller-owned pointer: hydrating must
+// take full ownership of optional fields, mirroring the slices.Clone of roles.
+func clonePtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	return &cp
+}
 
 // normaliseRoles validates, de-duplicates, and defaults the role set.
 func normaliseRoles(roles []Role) ([]Role, error) {

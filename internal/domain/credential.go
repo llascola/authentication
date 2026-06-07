@@ -157,14 +157,13 @@ type PasswordCredential struct {
 	updatedAt time.Time
 }
 
-func NewPasswordCredential(userID UserID, hash PasswordHash) (*PasswordCredential, error) {
+func NewPasswordCredential(now time.Time, userID UserID, hash PasswordHash) (*PasswordCredential, error) {
 	if userID.IsZero() {
 		return nil, ErrInvalidUserID
 	}
 	if hash.IsZero() {
 		return nil, ErrEmptyPasswordHash
 	}
-	now := time.Now().UTC()
 	return &PasswordCredential{
 		id:        NewCredentialID(),
 		userID:    userID,
@@ -183,12 +182,12 @@ func (c *PasswordCredential) Hash() PasswordHash   { return c.hash }
 func (c *PasswordCredential) sealedCredential()    {}
 
 // Rotate replaces the stored hash (e.g. on password change or rehash).
-func (c *PasswordCredential) Rotate(hash PasswordHash) error {
+func (c *PasswordCredential) Rotate(now time.Time, hash PasswordHash) error {
 	if hash.IsZero() {
 		return ErrEmptyPasswordHash
 	}
 	c.hash = hash
-	c.updatedAt = time.Now().UTC()
+	c.updatedAt = now
 	return nil
 }
 
@@ -225,7 +224,7 @@ type OAuthCredential struct {
 	createdAt time.Time
 }
 
-func NewOAuthCredential(userID UserID, provider Provider, subject string) (*OAuthCredential, error) {
+func NewOAuthCredential(now time.Time, userID UserID, provider Provider, subject string) (*OAuthCredential, error) {
 	if userID.IsZero() {
 		return nil, ErrInvalidUserID
 	}
@@ -241,7 +240,7 @@ func NewOAuthCredential(userID UserID, provider Provider, subject string) (*OAut
 		userID:    userID,
 		provider:  provider,
 		subject:   subject,
-		createdAt: time.Now().UTC(),
+		createdAt: now,
 	}, nil
 }
 
@@ -296,7 +295,7 @@ type OTPCredential struct {
 
 // NewOTPCredential creates an unconfirmed TOTP credential. Pass digits = 0 to
 // use the default (6).
-func NewOTPCredential(userID UserID, secret TOTPSecret, digits int) (*OTPCredential, error) {
+func NewOTPCredential(now time.Time, userID UserID, secret TOTPSecret, digits int) (*OTPCredential, error) {
 	if userID.IsZero() {
 		return nil, ErrInvalidUserID
 	}
@@ -309,7 +308,6 @@ func NewOTPCredential(userID UserID, secret TOTPSecret, digits int) (*OTPCredent
 	if digits < minOTPDigits || digits > maxOTPDigits {
 		return nil, fmt.Errorf("%w: %d", ErrInvalidOTPDigits, digits)
 	}
-	now := time.Now().UTC()
 	return &OTPCredential{
 		id:        NewCredentialID(),
 		userID:    userID,
@@ -331,12 +329,12 @@ func (c *OTPCredential) Confirmed() bool      { return c.confirmed }
 func (c *OTPCredential) sealedCredential()    {}
 
 // Confirm marks the credential as proven once the user submits a valid code.
-func (c *OTPCredential) Confirm() error {
+func (c *OTPCredential) Confirm(now time.Time) error {
 	if c.confirmed {
 		return ErrOTPAlreadyConfirmed
 	}
 	c.confirmed = true
-	c.updatedAt = time.Now().UTC()
+	c.updatedAt = now
 	return nil
 }
 
@@ -421,7 +419,7 @@ type WebAuthnCredential struct {
 
 // NewWebAuthnCredential registers a new authenticator. signCount starts at the
 // value the authenticator reported at registration (often 0).
-func NewWebAuthnCredential(userID UserID, webAuthnID WebAuthnID, publicKey PublicKey, signCount uint32) (*WebAuthnCredential, error) {
+func NewWebAuthnCredential(now time.Time, userID UserID, webAuthnID WebAuthnID, publicKey PublicKey, signCount uint32) (*WebAuthnCredential, error) {
 	if userID.IsZero() {
 		return nil, ErrInvalidUserID
 	}
@@ -431,7 +429,6 @@ func NewWebAuthnCredential(userID UserID, webAuthnID WebAuthnID, publicKey Publi
 	if publicKey.IsZero() {
 		return nil, ErrEmptyPublicKey
 	}
-	now := time.Now().UTC()
 	return &WebAuthnCredential{
 		id:         NewCredentialID(),
 		userID:     userID,
@@ -459,7 +456,7 @@ func (c *WebAuthnCredential) sealedCredential()      {}
 // sync. Counter-less authenticators (synced passkeys, hardware that omits the
 // counter) always report 0 — 0/0 is spec-legal and accepted, not a clone.
 // On a valid advance it records the new value.
-func (c *WebAuthnCredential) VerifyCounter(newCount uint32) error {
+func (c *WebAuthnCredential) VerifyCounter(now time.Time, newCount uint32) error {
 	// Counter disabled on both sides: accept (synced passkeys, counter-less keys).
 	if newCount == 0 && c.signCount == 0 {
 		return nil
@@ -468,7 +465,7 @@ func (c *WebAuthnCredential) VerifyCounter(newCount uint32) error {
 		return ErrAuthenticatorCloned
 	}
 	c.signCount = newCount
-	c.updatedAt = time.Now().UTC()
+	c.updatedAt = now
 	return nil
 }
 

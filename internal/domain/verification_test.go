@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ import (
 
 func mustVerificationToken(t *testing.T, purpose domain.Purpose) *domain.VerificationToken {
 	t.Helper()
-	tok, err := domain.NewVerificationToken(mustUserID(t), purpose, mustTokenHash(t, []byte("secret-hash")))
+	tok, err := domain.NewVerificationToken(timeFixed(), mustUserID(t), purpose, mustTokenHash(t, []byte("secret-hash")))
 	if err != nil {
 		t.Fatalf("NewVerificationToken: unexpected error: %v", err)
 	}
@@ -20,15 +21,18 @@ func mustVerificationToken(t *testing.T, purpose domain.Purpose) *domain.Verific
 }
 
 // reconstituteExpiredToken returns an unconsumed token whose deadline is in the
-// past, so time-derived expiry fires on Consume without controlling the clock.
-func reconstituteExpiredToken(t *testing.T) *domain.VerificationToken {
+// past relative to the returned now, so time-derived expiry fires on Consume
+// without controlling the wall clock.
+func reconstituteExpiredToken(t *testing.T) (*domain.VerificationToken, time.Time) {
 	t.Helper()
-	past := time.Now().UTC().Add(-2 * time.Hour)
-	return domain.ReconstituteVerificationToken(
+	now := timeFixed()
+	past := now.Add(-2 * time.Hour)
+	tok := domain.ReconstituteVerificationToken(
 		domain.NewVerificationTokenID(), domain.NewUserID(),
 		domain.PurposeMagicLink, mustTokenHash(t, []byte("h")),
 		past, past.Add(15*time.Minute), nil,
 	)
+	return tok, now
 }
 
 // --- VerificationTokenID ---------------------------------------------------
@@ -94,8 +98,11 @@ func TestNewVerificationToken(t *testing.T) {
 		if tok.Purpose() != domain.PurposeMagicLink {
 			t.Errorf("purpose = %v, want magic_link", tok.Purpose())
 		}
-		// expiry is derived from the same create instant — exact, clock-free.
-		if !tok.ExpiresAt().Equal(tok.CreatedAt().Add(15 * time.Minute)) {
+		// createdAt is exactly the instant passed; expiry derives from it + TTL.
+		if !tok.CreatedAt().Equal(timeFixed()) {
+			t.Errorf("createdAt = %v, want %v", tok.CreatedAt(), timeFixed())
+		}
+		if !tok.ExpiresAt().Equal(timeFixed().Add(15 * time.Minute)) {
 			t.Error("expiresAt != createdAt + purpose TTL")
 		}
 		if tok.IsConsumed() {
@@ -123,7 +130,7 @@ func TestNewVerificationToken(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := domain.NewVerificationToken(tc.userID, tc.purpose, tc.tokenHash)
+			_, err := domain.NewVerificationToken(timeFixed(), tc.userID, tc.purpose, tc.tokenHash)
 			if !errors.Is(err, tc.wantErr) {
 				t.Errorf("err = %v, want %v", err, tc.wantErr)
 			}
@@ -161,11 +168,11 @@ func TestVerificationTokenQueries(t *testing.T) {
 
 func TestVerificationTokenIsValidWhenConsumed(t *testing.T) {
 	tok := mustVerificationToken(t, domain.PurposeEmailVerify)
-	if err := tok.Consume(); err != nil {
+	if err := tok.Consume(timeFixed().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	// consumed token is never valid, even well within its window.
-	if tok.IsValid(tok.CreatedAt().Add(time.Minute)) {
+	if tok.IsValid(timeFixed().Add(2 * time.Minute)) {
 		t.Error("consumed token reported valid")
 	}
 }
@@ -173,32 +180,33 @@ func TestVerificationTokenIsValidWhenConsumed(t *testing.T) {
 // --- Consume ---------------------------------------------------------------
 
 func TestVerificationTokenConsume(t *testing.T) {
-	t.Run("ok marks consumed", func(t *testing.T) {
+	t.Run("ok marks consumed with stamp", func(t *testing.T) {
 		tok := mustVerificationToken(t, domain.PurposePasswordReset)
-		if err := tok.Consume(); err != nil {
+		consumedAt := timeFixed().Add(time.Minute)
+		if err := tok.Consume(consumedAt); err != nil {
 			t.Fatalf("Consume: %v", err)
 		}
 		if !tok.IsConsumed() {
 			t.Error("token not marked consumed")
 		}
-		if ts, ok := tok.ConsumedAt(); !ok || ts.IsZero() {
-			t.Error("consumedAt not set")
+		if ts, ok := tok.ConsumedAt(); !ok || !ts.Equal(consumedAt) {
+			t.Errorf("consumedAt = %v, want %v", ts, consumedAt)
 		}
 	})
 
 	t.Run("double consume rejected", func(t *testing.T) {
 		tok := mustVerificationToken(t, domain.PurposePasswordReset)
-		if err := tok.Consume(); err != nil {
+		if err := tok.Consume(timeFixed().Add(time.Minute)); err != nil {
 			t.Fatal(err)
 		}
-		if err := tok.Consume(); !errors.Is(err, domain.ErrTokenConsumed) {
+		if err := tok.Consume(timeFixed().Add(2 * time.Minute)); !errors.Is(err, domain.ErrTokenConsumed) {
 			t.Errorf("err = %v, want ErrTokenConsumed", err)
 		}
 	})
 
 	t.Run("expired rejected", func(t *testing.T) {
-		tok := reconstituteExpiredToken(t)
-		if err := tok.Consume(); !errors.Is(err, domain.ErrTokenExpired) {
+		tok, now := reconstituteExpiredToken(t)
+		if err := tok.Consume(now); !errors.Is(err, domain.ErrTokenExpired) {
 			t.Errorf("err = %v, want ErrTokenExpired", err)
 		}
 		if tok.IsConsumed() {
@@ -223,6 +231,9 @@ func TestReconstituteVerificationToken(t *testing.T) {
 
 	if tok.ID() != id || tok.UserID() != uid || tok.Purpose() != domain.PurposePasswordReset {
 		t.Error("reconstitute did not preserve core fields")
+	}
+	if !bytes.Equal(tok.TokenHash().Bytes(), []byte("h")) {
+		t.Errorf("tokenHash = %q, want h", tok.TokenHash().Bytes())
 	}
 	if !tok.CreatedAt().Equal(created) || !tok.ExpiresAt().Equal(created.Add(time.Hour)) {
 		t.Error("reconstitute did not preserve timestamps")

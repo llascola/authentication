@@ -58,7 +58,7 @@ type RecoveryCode struct {
 
 // ReconstituteRecoveryCode rebuilds a code from persisted state. Repository only.
 func ReconstituteRecoveryCode(hash TokenHash, usedAt *time.Time) RecoveryCode {
-	return RecoveryCode{hash: hash, usedAt: usedAt}
+	return RecoveryCode{hash: hash, usedAt: clonePtr(usedAt)}
 }
 
 func (c RecoveryCode) Hash() TokenHash { return c.hash }
@@ -91,7 +91,7 @@ type RecoveryCodeSet struct {
 // hashing are infrastructure crypto (CSPRNG); the domain receives only hashes,
 // shown once to the user as raw codes and never persisted in the clear. It
 // rejects an empty set, an oversized set, empty hashes, and duplicates.
-func NewRecoveryCodeSet(userID UserID, hashes []TokenHash) (*RecoveryCodeSet, error) {
+func NewRecoveryCodeSet(now time.Time, userID UserID, hashes []TokenHash) (*RecoveryCodeSet, error) {
 	if userID.IsZero() {
 		return nil, ErrInvalidUserID
 	}
@@ -119,7 +119,7 @@ func NewRecoveryCodeSet(userID UserID, hashes []TokenHash) (*RecoveryCodeSet, er
 		id:        NewRecoveryCodeSetID(),
 		userID:    userID,
 		codes:     codes,
-		createdAt: time.Now().UTC(),
+		createdAt: now,
 	}, nil
 }
 
@@ -170,7 +170,7 @@ func (s *RecoveryCodeSet) IsExhausted() bool { return s.Remaining() == 0 }
 // ErrRecoveryCodeInvalid when no unused code matches (unknown or already spent),
 // without disclosing which. The caller compares the user's raw code by hashing
 // it the same way the stored hashes were produced (infra), then passes the hash.
-func (s *RecoveryCodeSet) Consume(presented TokenHash) error {
+func (s *RecoveryCodeSet) Consume(now time.Time, presented TokenHash) error {
 	if presented.IsZero() {
 		return ErrRecoveryCodeInvalid
 	}
@@ -179,8 +179,8 @@ func (s *RecoveryCodeSet) Consume(presented TokenHash) error {
 			continue
 		}
 		if bytes.Equal(s.codes[i].hash.Bytes(), presented.Bytes()) {
-			now := time.Now().UTC()
-			s.codes[i].usedAt = &now
+			used := now
+			s.codes[i].usedAt = &used
 			return nil
 		}
 	}

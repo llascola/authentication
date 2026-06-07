@@ -147,7 +147,7 @@ func TestNewPasswordCredential(t *testing.T) {
 	hash := mustPasswordHash(t, []byte("h"))
 
 	t.Run("ok", func(t *testing.T) {
-		c, err := domain.NewPasswordCredential(uid, hash)
+		c, err := domain.NewPasswordCredential(timeFixed(), uid, hash)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -160,20 +160,20 @@ func TestNewPasswordCredential(t *testing.T) {
 		if c.Type() != domain.CredentialPassword {
 			t.Errorf("type = %v, want password", c.Type())
 		}
-		if !c.CreatedAt().Equal(c.UpdatedAt()) {
-			t.Error("createdAt and updatedAt should match on creation")
+		if !c.CreatedAt().Equal(timeFixed()) || !c.UpdatedAt().Equal(timeFixed()) {
+			t.Errorf("timestamps = (%v, %v), want both %v", c.CreatedAt(), c.UpdatedAt(), timeFixed())
 		}
 	})
 
 	t.Run("zero userID rejected", func(t *testing.T) {
-		_, err := domain.NewPasswordCredential(domain.UserID{}, hash)
+		_, err := domain.NewPasswordCredential(timeFixed(), domain.UserID{}, hash)
 		if !errors.Is(err, domain.ErrInvalidUserID) {
 			t.Errorf("err = %v, want ErrInvalidUserID", err)
 		}
 	})
 
 	t.Run("empty hash rejected", func(t *testing.T) {
-		_, err := domain.NewPasswordCredential(uid, domain.PasswordHash{})
+		_, err := domain.NewPasswordCredential(timeFixed(), uid, domain.PasswordHash{})
 		if !errors.Is(err, domain.ErrEmptyPasswordHash) {
 			t.Errorf("err = %v, want ErrEmptyPasswordHash", err)
 		}
@@ -181,22 +181,27 @@ func TestNewPasswordCredential(t *testing.T) {
 }
 
 func TestPasswordCredentialRotate(t *testing.T) {
-	c, err := domain.NewPasswordCredential(mustUserID(t), mustPasswordHash(t, []byte("old")))
+	c, err := domain.NewPasswordCredential(timeFixed(), mustUserID(t), mustPasswordHash(t, []byte("old")))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := c.Rotate(mustPasswordHash(t, []byte("new"))); err != nil {
+	rotatedAt := later(time.Hour)
+	if err := c.Rotate(rotatedAt, mustPasswordHash(t, []byte("new"))); err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
 	if !bytes.Equal(c.Hash().Bytes(), []byte("new")) {
 		t.Errorf("hash = %q, want new", c.Hash().Bytes())
 	}
-	if c.UpdatedAt().Before(c.CreatedAt()) {
-		t.Error("updatedAt went backwards after rotate")
+	// rotate stamps exactly the instant it was given; createdAt is untouched.
+	if !c.UpdatedAt().Equal(rotatedAt) {
+		t.Errorf("updatedAt = %v, want %v", c.UpdatedAt(), rotatedAt)
+	}
+	if !c.CreatedAt().Equal(timeFixed()) {
+		t.Errorf("createdAt = %v, want unchanged %v", c.CreatedAt(), timeFixed())
 	}
 
-	if err := c.Rotate(domain.PasswordHash{}); !errors.Is(err, domain.ErrEmptyPasswordHash) {
+	if err := c.Rotate(later(2*time.Hour), domain.PasswordHash{}); !errors.Is(err, domain.ErrEmptyPasswordHash) {
 		t.Errorf("rotate empty err = %v, want ErrEmptyPasswordHash", err)
 	}
 }
@@ -205,7 +210,7 @@ func TestReconstitutePasswordCredential(t *testing.T) {
 	id := domain.NewCredentialID()
 	uid := mustUserID(t)
 	hash := mustPasswordHash(t, []byte("stored"))
-	created := time.Now().UTC().Add(-2 * time.Hour)
+	created := timeFixed().Add(-2 * time.Hour)
 	updated := created.Add(time.Hour)
 
 	c := domain.ReconstitutePasswordCredential(id, uid, hash, created, updated)
@@ -236,14 +241,13 @@ func TestNewOAuthCredential(t *testing.T) {
 		wantErr  error
 	}{
 		{"ok", uid, domain.ProviderGoogle, "sub-123", nil},
-		{"trims subject", uid, domain.ProviderGitHub, "  gh-9  ", nil},
 		{"zero userID", domain.UserID{}, domain.ProviderGoogle, "x", domain.ErrInvalidUserID},
 		{"bad provider", uid, domain.Provider("aol"), "x", domain.ErrInvalidProvider},
 		{"empty subject", uid, domain.ProviderGoogle, "   ", domain.ErrEmptySubject},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			c, err := domain.NewOAuthCredential(tc.userID, tc.provider, tc.subject)
+			c, err := domain.NewOAuthCredential(timeFixed(), tc.userID, tc.provider, tc.subject)
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
@@ -256,20 +260,30 @@ func TestNewOAuthCredential(t *testing.T) {
 			if c.Provider() != tc.provider {
 				t.Errorf("provider = %v, want %v", c.Provider(), tc.provider)
 			}
-			if got, want := c.Subject(), "sub-123"; tc.name == "ok" && got != want {
-				t.Errorf("subject = %q, want %q", got, want)
+			if c.Subject() != tc.subject {
+				t.Errorf("subject = %q, want %q", c.Subject(), tc.subject)
 			}
-			if tc.name == "trims subject" && c.Subject() != "gh-9" {
-				t.Errorf("subject = %q, want trimmed gh-9", c.Subject())
+			if !c.CreatedAt().Equal(timeFixed()) {
+				t.Errorf("createdAt = %v, want %v", c.CreatedAt(), timeFixed())
 			}
 		})
+	}
+}
+
+func TestNewOAuthCredentialTrimsSubject(t *testing.T) {
+	c, err := domain.NewOAuthCredential(timeFixed(), mustUserID(t), domain.ProviderGitHub, "  gh-9  ")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Subject() != "gh-9" {
+		t.Errorf("subject = %q, want trimmed gh-9", c.Subject())
 	}
 }
 
 func TestReconstituteOAuthCredential(t *testing.T) {
 	id := domain.NewCredentialID()
 	uid := mustUserID(t)
-	created := time.Now().UTC().Add(-time.Hour)
+	created := timeFixed().Add(-time.Hour)
 
 	c := domain.ReconstituteOAuthCredential(id, uid, domain.ProviderGitHub, "gh-42", created)
 	if c.ID() != id {
@@ -312,7 +326,7 @@ func TestNewOTPCredential(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			c, err := domain.NewOTPCredential(tc.userID, tc.secret, tc.digits)
+			c, err := domain.NewOTPCredential(timeFixed(), tc.userID, tc.secret, tc.digits)
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
@@ -328,12 +342,15 @@ func TestNewOTPCredential(t *testing.T) {
 			if c.Confirmed() {
 				t.Error("new OTP credential should be unconfirmed")
 			}
+			if !bytes.Equal(c.Secret().Bytes(), []byte("seed")) {
+				t.Errorf("secret not stored: %q", c.Secret().Bytes())
+			}
 		})
 	}
 }
 
 func TestOTPCredentialConfirm(t *testing.T) {
-	c, err := domain.NewOTPCredential(mustUserID(t), mustTOTPSecret(t, []byte("seed")), 0)
+	c, err := domain.NewOTPCredential(timeFixed(), mustUserID(t), mustTOTPSecret(t, []byte("seed")), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,16 +359,17 @@ func TestOTPCredentialConfirm(t *testing.T) {
 		t.Error("createdAt and updatedAt should match on creation")
 	}
 
-	if err := c.Confirm(); err != nil {
+	confirmedAt := later(time.Hour)
+	if err := c.Confirm(confirmedAt); err != nil {
 		t.Fatalf("Confirm: %v", err)
 	}
 	if !c.Confirmed() {
 		t.Error("not confirmed after Confirm")
 	}
-	if c.UpdatedAt().Before(c.CreatedAt()) {
-		t.Error("updatedAt went backwards after confirm")
+	if !c.UpdatedAt().Equal(confirmedAt) {
+		t.Errorf("updatedAt = %v, want %v", c.UpdatedAt(), confirmedAt)
 	}
-	if err := c.Confirm(); !errors.Is(err, domain.ErrOTPAlreadyConfirmed) {
+	if err := c.Confirm(later(2 * time.Hour)); !errors.Is(err, domain.ErrOTPAlreadyConfirmed) {
 		t.Errorf("second confirm err = %v, want ErrOTPAlreadyConfirmed", err)
 	}
 }
@@ -360,7 +378,7 @@ func TestReconstituteOTPCredential(t *testing.T) {
 	id := domain.NewCredentialID()
 	uid := mustUserID(t)
 	secret := mustTOTPSecret(t, []byte("seed"))
-	created := time.Now().UTC().Add(-3 * time.Hour)
+	created := timeFixed().Add(-3 * time.Hour)
 	updated := created.Add(time.Hour)
 
 	c := domain.ReconstituteOTPCredential(id, uid, secret, 8, true, created, updated)
@@ -443,7 +461,7 @@ func TestNewWebAuthnCredential(t *testing.T) {
 	uid := mustUserID(t)
 
 	t.Run("ok", func(t *testing.T) {
-		c, err := domain.NewWebAuthnCredential(uid, mustWebAuthnID(t, []byte("h")), mustPublicKey(t, []byte("pk")), 5)
+		c, err := domain.NewWebAuthnCredential(timeFixed(), uid, mustWebAuthnID(t, []byte("h")), mustPublicKey(t, []byte("pk")), 5)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -456,8 +474,8 @@ func TestNewWebAuthnCredential(t *testing.T) {
 		if c.SignCount() != 5 {
 			t.Errorf("signCount = %d, want 5", c.SignCount())
 		}
-		if !c.CreatedAt().Equal(c.UpdatedAt()) {
-			t.Error("createdAt and updatedAt should match on creation")
+		if !c.CreatedAt().Equal(timeFixed()) || !c.UpdatedAt().Equal(timeFixed()) {
+			t.Errorf("timestamps = (%v, %v), want both %v", c.CreatedAt(), c.UpdatedAt(), timeFixed())
 		}
 		// satisfies the sealed Credential interface
 		var _ domain.Credential = c
@@ -476,7 +494,7 @@ func TestNewWebAuthnCredential(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := domain.NewWebAuthnCredential(tc.userID, tc.webAuthnID, tc.publicKey, 0)
+			_, err := domain.NewWebAuthnCredential(timeFixed(), tc.userID, tc.webAuthnID, tc.publicKey, 0)
 			if !errors.Is(err, tc.wantErr) {
 				t.Errorf("err = %v, want %v", err, tc.wantErr)
 			}
@@ -487,26 +505,30 @@ func TestNewWebAuthnCredential(t *testing.T) {
 func TestWebAuthnVerifyCounter(t *testing.T) {
 	newCred := func(t *testing.T, start uint32) *domain.WebAuthnCredential {
 		t.Helper()
-		c, err := domain.NewWebAuthnCredential(mustUserID(t), mustWebAuthnID(t, []byte("h")), mustPublicKey(t, []byte("pk")), start)
+		c, err := domain.NewWebAuthnCredential(timeFixed(), mustUserID(t), mustWebAuthnID(t, []byte("h")), mustPublicKey(t, []byte("pk")), start)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return c
 	}
 
-	t.Run("advance accepted and recorded", func(t *testing.T) {
+	t.Run("advance accepted and recorded with stamp", func(t *testing.T) {
 		c := newCred(t, 5)
-		if err := c.VerifyCounter(6); err != nil {
+		advancedAt := later(time.Hour)
+		if err := c.VerifyCounter(advancedAt, 6); err != nil {
 			t.Fatalf("VerifyCounter: %v", err)
 		}
 		if c.SignCount() != 6 {
 			t.Errorf("signCount = %d, want 6", c.SignCount())
 		}
+		if !c.UpdatedAt().Equal(advancedAt) {
+			t.Errorf("updatedAt = %v, want %v", c.UpdatedAt(), advancedAt)
+		}
 	})
 
 	t.Run("zero on both sides accepted (counter-less)", func(t *testing.T) {
 		c := newCred(t, 0)
-		if err := c.VerifyCounter(0); err != nil {
+		if err := c.VerifyCounter(later(time.Hour), 0); err != nil {
 			t.Errorf("0/0 err = %v, want nil", err)
 		}
 		if c.SignCount() != 0 {
@@ -516,7 +538,7 @@ func TestWebAuthnVerifyCounter(t *testing.T) {
 
 	t.Run("equal counter rejected as clone", func(t *testing.T) {
 		c := newCred(t, 7)
-		if err := c.VerifyCounter(7); !errors.Is(err, domain.ErrAuthenticatorCloned) {
+		if err := c.VerifyCounter(later(time.Hour), 7); !errors.Is(err, domain.ErrAuthenticatorCloned) {
 			t.Errorf("err = %v, want ErrAuthenticatorCloned", err)
 		}
 		if c.SignCount() != 7 {
@@ -526,14 +548,14 @@ func TestWebAuthnVerifyCounter(t *testing.T) {
 
 	t.Run("regressed counter rejected as clone", func(t *testing.T) {
 		c := newCred(t, 10)
-		if err := c.VerifyCounter(3); !errors.Is(err, domain.ErrAuthenticatorCloned) {
+		if err := c.VerifyCounter(later(time.Hour), 3); !errors.Is(err, domain.ErrAuthenticatorCloned) {
 			t.Errorf("err = %v, want ErrAuthenticatorCloned", err)
 		}
 	})
 
 	t.Run("zero after non-zero rejected as clone", func(t *testing.T) {
 		c := newCred(t, 4)
-		if err := c.VerifyCounter(0); !errors.Is(err, domain.ErrAuthenticatorCloned) {
+		if err := c.VerifyCounter(later(time.Hour), 0); !errors.Is(err, domain.ErrAuthenticatorCloned) {
 			t.Errorf("err = %v, want ErrAuthenticatorCloned", err)
 		}
 	})
@@ -544,7 +566,7 @@ func TestReconstituteWebAuthnCredential(t *testing.T) {
 	uid := mustUserID(t)
 	waID := mustWebAuthnID(t, []byte("handle"))
 	pk := mustPublicKey(t, []byte("cose"))
-	created := time.Now().UTC().Add(-4 * time.Hour)
+	created := timeFixed().Add(-4 * time.Hour)
 	updated := created.Add(2 * time.Hour)
 
 	c := domain.ReconstituteWebAuthnCredential(id, uid, waID, pk, 42, created, updated)
@@ -569,10 +591,10 @@ func TestReconstituteWebAuthnCredential(t *testing.T) {
 
 	// reconstituted signCount feeds clone detection: an advance past it works,
 	// a repeat is rejected.
-	if err := c.VerifyCounter(43); err != nil {
+	if err := c.VerifyCounter(later(time.Hour), 43); err != nil {
 		t.Errorf("advance past reconstituted count: %v", err)
 	}
-	if err := c.VerifyCounter(42); !errors.Is(err, domain.ErrAuthenticatorCloned) {
+	if err := c.VerifyCounter(later(2*time.Hour), 42); !errors.Is(err, domain.ErrAuthenticatorCloned) {
 		t.Errorf("err = %v, want ErrAuthenticatorCloned", err)
 	}
 }

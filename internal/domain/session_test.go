@@ -28,6 +28,7 @@ func mustTokenHash(t *testing.T, b []byte) domain.TokenHash {
 func mustSession(t *testing.T) *domain.Session {
 	t.Helper()
 	s, err := domain.NewSession(
+		timeFixed(),
 		mustUserID(t),
 		mustTokenHash(t, []byte("token-hash")),
 		domain.AAL1,
@@ -104,6 +105,22 @@ func TestAuthLevel(t *testing.T) {
 	}
 }
 
+// --- SessionStatus ---------------------------------------------------------
+
+func TestSessionStatusString(t *testing.T) {
+	tests := map[domain.SessionStatus]string{
+		domain.SessionActive:    "active",
+		domain.SessionRevoked:   "revoked",
+		domain.SessionExpired:   "expired",
+		domain.SessionStatus(9): "unknown",
+	}
+	for s, want := range tests {
+		if got := s.String(); got != want {
+			t.Errorf("SessionStatus(%d).String() = %q, want %q", s, got, want)
+		}
+	}
+}
+
 // --- DeviceInfo ------------------------------------------------------------
 
 func TestNewDeviceInfo(t *testing.T) {
@@ -152,11 +169,14 @@ func TestNewSession(t *testing.T) {
 		if s.AuthLevel() != domain.AAL1 {
 			t.Errorf("authLevel = %v, want aal1", s.AuthLevel())
 		}
-		// deadlines are derived from the same issue instant — exact, clock-free.
-		if !s.AbsoluteExpiry().Equal(s.IssuedAt().Add(testAbsTTL)) {
+		// issuedAt is exactly the instant we passed; deadlines derive from it.
+		if !s.IssuedAt().Equal(timeFixed()) {
+			t.Errorf("issuedAt = %v, want %v", s.IssuedAt(), timeFixed())
+		}
+		if !s.AbsoluteExpiry().Equal(timeFixed().Add(testAbsTTL)) {
 			t.Error("absExpiry != issuedAt + absoluteTTL")
 		}
-		if !s.IdleExpiry().Equal(s.IssuedAt().Add(testIdleTTL)) {
+		if !s.IdleExpiry().Equal(timeFixed().Add(testIdleTTL)) {
 			t.Error("idleExpiry != issuedAt + idleTTL")
 		}
 		if !s.LastSeenAt().Equal(s.IssuedAt()) {
@@ -190,7 +210,7 @@ func TestNewSession(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := domain.NewSession(tc.userID, tc.tokenHash, tc.level, []domain.AuthMethod{domain.AuthMethodPassword}, domain.DeviceInfo{}, tc.idle, tc.abs)
+			_, err := domain.NewSession(timeFixed(), tc.userID, tc.tokenHash, tc.level, []domain.AuthMethod{domain.AuthMethodPassword}, domain.DeviceInfo{}, tc.idle, tc.abs)
 			if !errors.Is(err, tc.wantErr) {
 				t.Errorf("err = %v, want %v", err, tc.wantErr)
 			}
@@ -201,7 +221,7 @@ func TestNewSession(t *testing.T) {
 func TestNewSessionIdleCappedAtAbsolute(t *testing.T) {
 	// idleTTL == absoluteTTL: idle deadline must be clamped to the absolute cap.
 	s, err := domain.NewSession(
-		mustUserID(t), mustTokenHash(t, []byte("h")),
+		timeFixed(), mustUserID(t), mustTokenHash(t, []byte("h")),
 		domain.AAL1, []domain.AuthMethod{domain.AuthMethodPassword}, domain.DeviceInfo{},
 		testAbsTTL, testAbsTTL,
 	)
@@ -231,7 +251,7 @@ func TestAuthMethodValid(t *testing.T) {
 func TestNewSessionAMR(t *testing.T) {
 	mk := func(methods []domain.AuthMethod) (*domain.Session, error) {
 		return domain.NewSession(
-			mustUserID(t), mustTokenHash(t, []byte("h")),
+			timeFixed(), mustUserID(t), mustTokenHash(t, []byte("h")),
 			domain.AAL2, methods, domain.DeviceInfo{},
 			testIdleTTL, testAbsTTL,
 		)
@@ -313,32 +333,53 @@ func TestSessionExpiryQueries(t *testing.T) {
 func TestSessionTouch(t *testing.T) {
 	s := mustSession(t)
 
-	if err := s.Touch(); err != nil {
+	touchAt := timeFixed().Add(10 * time.Minute) // within the idle window
+	if err := s.Touch(touchAt); err != nil {
 		t.Fatalf("Touch: %v", err)
 	}
-	// invariant holds regardless of wall clock: both set from the same instant.
-	if !s.IdleExpiry().Equal(s.LastSeenAt().Add(testIdleTTL)) {
-		t.Error("after Touch, idleExpiry != lastSeenAt + idleTTL")
+	// Touch stamps exactly the instant given and slides idle from it.
+	if !s.LastSeenAt().Equal(touchAt) {
+		t.Errorf("lastSeenAt = %v, want %v", s.LastSeenAt(), touchAt)
 	}
-	if s.LastSeenAt().Before(s.IssuedAt()) {
-		t.Error("lastSeenAt went backwards")
+	if !s.IdleExpiry().Equal(touchAt.Add(testIdleTTL)) {
+		t.Errorf("idleExpiry = %v, want %v", s.IdleExpiry(), touchAt.Add(testIdleTTL))
+	}
+}
+
+func TestSessionTouchClampsIdleToAbsolute(t *testing.T) {
+	// Session whose idle window is as long as the absolute cap, so a late Touch
+	// would push idleExpiry past absExpiry — it must clamp to the cap.
+	issued := timeFixed()
+	s := domain.ReconstituteSession(
+		domain.NewSessionID(), domain.NewUserID(), mustTokenHash(t, []byte("h")),
+		domain.SessionActive, domain.AAL1,
+		[]domain.AuthMethod{domain.AuthMethodPassword}, domain.DeviceInfo{},
+		issued, issued.Add(testAbsTTL), issued.Add(testAbsTTL), testAbsTTL,
+		issued, nil, "",
+	)
+	touchAt := issued.Add(30 * time.Minute) // touchAt + idleTTL(=2h) > absExpiry(=2h)
+	if err := s.Touch(touchAt); err != nil {
+		t.Fatalf("Touch: %v", err)
+	}
+	if !s.IdleExpiry().Equal(s.AbsoluteExpiry()) {
+		t.Errorf("idleExpiry = %v, want clamped to absExpiry %v", s.IdleExpiry(), s.AbsoluteExpiry())
 	}
 }
 
 func TestSessionTouchRejectsDeadSessions(t *testing.T) {
 	t.Run("revoked", func(t *testing.T) {
 		s := mustSession(t)
-		if err := s.Revoke("logout"); err != nil {
+		if err := s.Revoke(timeFixed().Add(time.Minute), "logout"); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.Touch(); !errors.Is(err, domain.ErrSessionRevoked) {
+		if err := s.Touch(timeFixed().Add(2 * time.Minute)); !errors.Is(err, domain.ErrSessionRevoked) {
 			t.Errorf("err = %v, want ErrSessionRevoked", err)
 		}
 	})
 
 	t.Run("expired", func(t *testing.T) {
-		s := reconstituteExpired(t)
-		if err := s.Touch(); !errors.Is(err, domain.ErrSessionExpired) {
+		s, now := reconstituteExpired(t)
+		if err := s.Touch(now); !errors.Is(err, domain.ErrSessionExpired) {
 			t.Errorf("err = %v, want ErrSessionExpired", err)
 		}
 	})
@@ -349,20 +390,21 @@ func TestSessionTouchRejectsDeadSessions(t *testing.T) {
 func TestSessionRevoke(t *testing.T) {
 	s := mustSession(t)
 
-	if err := s.Revoke("  user logout  "); err != nil {
+	revokedAt := timeFixed().Add(time.Minute)
+	if err := s.Revoke(revokedAt, "  user logout  "); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
 	if s.Status() != domain.SessionRevoked {
 		t.Errorf("status = %v, want revoked", s.Status())
 	}
-	if ts, ok := s.RevokedAt(); !ok || ts.IsZero() {
-		t.Error("revokedAt not set")
+	if ts, ok := s.RevokedAt(); !ok || !ts.Equal(revokedAt) {
+		t.Errorf("revokedAt = %v, want %v", ts, revokedAt)
 	}
 	if s.Reason() != "user logout" {
 		t.Errorf("reason = %q, want trimmed 'user logout'", s.Reason())
 	}
 
-	if err := s.Revoke("again"); !errors.Is(err, domain.ErrSessionNotActive) {
+	if err := s.Revoke(timeFixed().Add(2*time.Minute), "again"); !errors.Is(err, domain.ErrSessionNotActive) {
 		t.Errorf("double revoke err = %v, want ErrSessionNotActive", err)
 	}
 }
@@ -370,16 +412,27 @@ func TestSessionRevoke(t *testing.T) {
 // --- Expire ----------------------------------------------------------------
 
 func TestSessionExpire(t *testing.T) {
-	t.Run("not yet expired rejected", func(t *testing.T) {
+	t.Run("active but not yet expired rejected", func(t *testing.T) {
 		s := mustSession(t)
-		if err := s.Expire(); !errors.Is(err, domain.ErrSessionNotActive) {
+		if err := s.Expire(timeFixed().Add(time.Minute)); !errors.Is(err, domain.ErrSessionNotExpired) {
+			t.Errorf("err = %v, want ErrSessionNotExpired", err)
+		}
+	})
+
+	t.Run("revoked session rejected", func(t *testing.T) {
+		s := mustSession(t)
+		if err := s.Revoke(timeFixed().Add(time.Minute), "logout"); err != nil {
+			t.Fatal(err)
+		}
+		// past a deadline but already non-active: Expire must refuse.
+		if err := s.Expire(timeFixed().Add(testAbsTTL + time.Hour)); !errors.Is(err, domain.ErrSessionNotActive) {
 			t.Errorf("err = %v, want ErrSessionNotActive", err)
 		}
 	})
 
 	t.Run("past deadline transitions to expired", func(t *testing.T) {
-		s := reconstituteExpired(t)
-		if err := s.Expire(); err != nil {
+		s, now := reconstituteExpired(t)
+		if err := s.Expire(now); err != nil {
 			t.Fatalf("Expire: %v", err)
 		}
 		if s.Status() != domain.SessionExpired {
@@ -393,7 +446,7 @@ func TestSessionExpire(t *testing.T) {
 func TestSessionStepUp(t *testing.T) {
 	t.Run("raise aal1 -> aal2 records method", func(t *testing.T) {
 		s := mustSession(t)
-		if err := s.StepUp(domain.AAL2, domain.AuthMethodOTP); err != nil {
+		if err := s.StepUp(timeFixed().Add(time.Minute), domain.AAL2, domain.AuthMethodOTP); err != nil {
 			t.Fatalf("StepUp: %v", err)
 		}
 		if s.AuthLevel() != domain.AAL2 {
@@ -407,7 +460,7 @@ func TestSessionStepUp(t *testing.T) {
 	t.Run("equal level keeps level, records method, dedupes", func(t *testing.T) {
 		s := mustSession(t)
 		// pwd already in amr from creation; re-presenting it must not duplicate.
-		if err := s.StepUp(domain.AAL1, domain.AuthMethodPassword); err != nil {
+		if err := s.StepUp(timeFixed().Add(time.Minute), domain.AAL1, domain.AuthMethodPassword); err != nil {
 			t.Errorf("equal StepUp err = %v, want nil", err)
 		}
 		if len(s.AMR()) != 1 {
@@ -417,34 +470,41 @@ func TestSessionStepUp(t *testing.T) {
 
 	t.Run("lowering rejected", func(t *testing.T) {
 		s := mustSession(t)
-		if err := s.StepUp(domain.AAL2, domain.AuthMethodOTP); err != nil {
+		if err := s.StepUp(timeFixed().Add(time.Minute), domain.AAL2, domain.AuthMethodOTP); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.StepUp(domain.AAL1, domain.AuthMethodPassword); !errors.Is(err, domain.ErrAALNotRaised) {
+		if err := s.StepUp(timeFixed().Add(2*time.Minute), domain.AAL1, domain.AuthMethodPassword); !errors.Is(err, domain.ErrAALNotRaised) {
 			t.Errorf("err = %v, want ErrAALNotRaised", err)
 		}
 	})
 
 	t.Run("invalid level rejected", func(t *testing.T) {
 		s := mustSession(t)
-		if err := s.StepUp(domain.AuthLevel(0), domain.AuthMethodOTP); !errors.Is(err, domain.ErrInvalidAuthLevel) {
+		if err := s.StepUp(timeFixed().Add(time.Minute), domain.AuthLevel(0), domain.AuthMethodOTP); !errors.Is(err, domain.ErrInvalidAuthLevel) {
 			t.Errorf("err = %v, want ErrInvalidAuthLevel", err)
 		}
 	})
 
 	t.Run("invalid method rejected", func(t *testing.T) {
 		s := mustSession(t)
-		if err := s.StepUp(domain.AAL2, domain.AuthMethod("face")); !errors.Is(err, domain.ErrInvalidAuthMethod) {
+		if err := s.StepUp(timeFixed().Add(time.Minute), domain.AAL2, domain.AuthMethod("face")); !errors.Is(err, domain.ErrInvalidAuthMethod) {
 			t.Errorf("err = %v, want ErrInvalidAuthMethod", err)
 		}
 	})
 
 	t.Run("non-active rejected", func(t *testing.T) {
 		s := mustSession(t)
-		if err := s.Revoke("x"); err != nil {
+		if err := s.Revoke(timeFixed().Add(time.Minute), "x"); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.StepUp(domain.AAL2, domain.AuthMethodOTP); !errors.Is(err, domain.ErrSessionNotActive) {
+		if err := s.StepUp(timeFixed().Add(2*time.Minute), domain.AAL2, domain.AuthMethodOTP); !errors.Is(err, domain.ErrSessionNotActive) {
+			t.Errorf("err = %v, want ErrSessionNotActive", err)
+		}
+	})
+
+	t.Run("expired rejected", func(t *testing.T) {
+		s, now := reconstituteExpired(t)
+		if err := s.StepUp(now, domain.AAL2, domain.AuthMethodOTP); !errors.Is(err, domain.ErrSessionNotActive) {
 			t.Errorf("err = %v, want ErrSessionNotActive", err)
 		}
 	})
@@ -471,6 +531,12 @@ func TestReconstituteSession(t *testing.T) {
 	if s.ID() != id || s.UserID() != uid || s.AuthLevel() != domain.AAL2 {
 		t.Error("reconstitute did not preserve core fields")
 	}
+	if !bytes.Equal(s.TokenHash().Bytes(), []byte("h")) {
+		t.Errorf("tokenHash = %q, want h", s.TokenHash().Bytes())
+	}
+	if s.Device() != (domain.DeviceInfo{}) {
+		t.Error("reconstitute did not preserve device")
+	}
 	if !s.UsedMethod(domain.AuthMethodPassword) || !s.UsedMethod(domain.AuthMethodOTP) {
 		t.Errorf("reconstitute did not preserve amr: %v", s.AMR())
 	}
@@ -482,16 +548,37 @@ func TestReconstituteSession(t *testing.T) {
 	}
 }
 
+func TestReconstituteSessionIsolatesRevokedAt(t *testing.T) {
+	issued := timeFixed()
+	revoked := issued.Add(time.Hour)
+	s := domain.ReconstituteSession(
+		domain.NewSessionID(), domain.NewUserID(), mustTokenHash(t, []byte("h")),
+		domain.SessionRevoked, domain.AAL1,
+		[]domain.AuthMethod{domain.AuthMethodPassword}, domain.DeviceInfo{},
+		issued, issued.Add(testAbsTTL), issued.Add(testIdleTTL), testIdleTTL,
+		issued, &revoked, "x",
+	)
+
+	// mutating the caller-owned pointee must not move the aggregate's revokedAt.
+	revoked = revoked.Add(-100 * time.Hour)
+	if ts, ok := s.RevokedAt(); !ok || !ts.Equal(issued.Add(time.Hour)) {
+		t.Errorf("revokedAt aliased caller pointer: got %v after mutation", ts)
+	}
+}
+
 // reconstituteExpired returns an active-status session whose deadlines are in
-// the past, so time-derived expiry fires without controlling the clock.
-func reconstituteExpired(t *testing.T) *domain.Session {
+// the past relative to the returned now, so time-derived expiry fires without
+// controlling the wall clock.
+func reconstituteExpired(t *testing.T) (*domain.Session, time.Time) {
 	t.Helper()
-	past := time.Now().UTC().Add(-testAbsTTL - time.Hour)
-	return domain.ReconstituteSession(
+	now := timeFixed()
+	past := now.Add(-testAbsTTL - time.Hour)
+	s := domain.ReconstituteSession(
 		domain.NewSessionID(), domain.NewUserID(), mustTokenHash(t, []byte("h")),
 		domain.SessionActive, domain.AAL1,
 		[]domain.AuthMethod{domain.AuthMethodPassword}, domain.DeviceInfo{},
 		past, past.Add(testAbsTTL), past.Add(testIdleTTL), testIdleTTL,
 		past, nil, "",
 	)
+	return s, now
 }

@@ -127,7 +127,7 @@ type VerificationToken struct {
 
 // NewVerificationToken issues a fresh, unconsumed token. The expiry is derived
 // from the domain's per-purpose TTL policy, not supplied by the caller.
-func NewVerificationToken(userID UserID, purpose Purpose, tokenHash TokenHash) (*VerificationToken, error) {
+func NewVerificationToken(now time.Time, userID UserID, purpose Purpose, tokenHash TokenHash) (*VerificationToken, error) {
 	if userID.IsZero() {
 		return nil, ErrInvalidUserID
 	}
@@ -141,7 +141,6 @@ func NewVerificationToken(userID UserID, purpose Purpose, tokenHash TokenHash) (
 		return nil, fmt.Errorf("%w: %d", ErrInvalidPurpose, purpose)
 	}
 
-	now := time.Now().UTC()
 	return &VerificationToken{
 		id:        NewVerificationTokenID(),
 		userID:    userID,
@@ -210,11 +209,10 @@ func (t *VerificationToken) IsValid(now time.Time) bool {
 // called only after the caller has matched the presented secret to this token's
 // hash; the domain owns the lifecycle, not the constant-time comparison (that
 // crypto lives in the infrastructure layer).
-func (t *VerificationToken) Consume() error {
+func (t *VerificationToken) Consume(now time.Time) error {
 	if t.IsConsumed() {
 		return ErrTokenConsumed
 	}
-	now := time.Now().UTC()
 	if t.IsExpired(now) {
 		return ErrTokenExpired
 	}

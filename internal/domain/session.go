@@ -21,6 +21,7 @@ var (
 	ErrSessionRevoked    = errors.New("domain: session revoked")
 	ErrSessionExpired    = errors.New("domain: session expired")
 	ErrSessionNotActive  = errors.New("domain: session not active")
+	ErrSessionNotExpired = errors.New("domain: session not past a deadline")
 	ErrAALNotRaised      = errors.New("domain: auth level cannot be lowered")
 	ErrInvalidAuthMethod = errors.New("domain: invalid auth method")
 	ErrNoAuthMethod      = errors.New("domain: session requires at least one auth method")
@@ -237,6 +238,7 @@ type Session struct {
 // absoluteTTL is the hard lifetime cap. Both must be positive and idleTTL must
 // not exceed absoluteTTL.
 func NewSession(
+	now time.Time,
 	userID UserID,
 	tokenHash TokenHash,
 	authLevel AuthLevel,
@@ -261,7 +263,6 @@ func NewSession(
 		return nil, ErrInvalidTTL
 	}
 
-	now := time.Now().UTC()
 	absExpiry := now.Add(absoluteTTL)
 	return &Session{
 		id:         NewSessionID(),
@@ -308,7 +309,7 @@ func ReconstituteSession(
 		idleExpiry: idleExpiry,
 		idleTTL:    idleTTL,
 		lastSeenAt: lastSeenAt,
-		revokedAt:  revokedAt,
+		revokedAt:  clonePtr(revokedAt),
 		reason:     reason,
 	}
 }
@@ -359,8 +360,7 @@ func (s *Session) IsActive(now time.Time) bool {
 
 // Touch records activity: it refreshes lastSeenAt and slides the idle deadline
 // (bounded by the absolute cap). It fails on a revoked or expired session.
-func (s *Session) Touch() error {
-	now := time.Now().UTC()
+func (s *Session) Touch(now time.Time) error {
 	if s.status == SessionRevoked {
 		return ErrSessionRevoked
 	}
@@ -373,11 +373,10 @@ func (s *Session) Touch() error {
 }
 
 // Revoke terminates an active session with an audit reason.
-func (s *Session) Revoke(reason string) error {
+func (s *Session) Revoke(now time.Time, reason string) error {
 	if s.status != SessionActive {
 		return ErrSessionNotActive
 	}
-	now := time.Now().UTC()
 	s.status = SessionRevoked
 	s.revokedAt = &now
 	s.reason = strings.TrimSpace(reason)
@@ -385,14 +384,16 @@ func (s *Session) Revoke(reason string) error {
 }
 
 // Expire marks a session expired once past a deadline. Intended for a sweeper
-// that persists the derived state; it errors if the session is not active or
-// has not actually expired yet.
-func (s *Session) Expire() error {
+// that persists the derived state. It returns ErrSessionNotActive when the
+// session is not in the active state (already revoked/expired), and
+// ErrSessionNotExpired when it is active but has not yet passed a deadline —
+// the two cases are distinct so a caller can tell "already gone" from "too early".
+func (s *Session) Expire(now time.Time) error {
 	if s.status != SessionActive {
 		return ErrSessionNotActive
 	}
-	if !s.IsExpired(time.Now().UTC()) {
-		return ErrSessionNotActive
+	if !s.IsExpired(now) {
+		return ErrSessionNotExpired
 	}
 	s.status = SessionExpired
 	return nil
@@ -403,14 +404,14 @@ func (s *Session) Expire() error {
 // the method is required and appended to the amr set (deduplicated). The level
 // only ever raises: equal level keeps the level but still records the method,
 // lower level is rejected. Fails on a non-active session or invalid inputs.
-func (s *Session) StepUp(level AuthLevel, method AuthMethod) error {
+func (s *Session) StepUp(now time.Time, level AuthLevel, method AuthMethod) error {
 	if !level.Valid() {
 		return fmt.Errorf("%w: %d", ErrInvalidAuthLevel, level)
 	}
 	if !method.Valid() {
 		return fmt.Errorf("%w: %q", ErrInvalidAuthMethod, method)
 	}
-	if !s.IsActive(time.Now().UTC()) {
+	if !s.IsActive(now) {
 		return ErrSessionNotActive
 	}
 	if level < s.authLevel {
