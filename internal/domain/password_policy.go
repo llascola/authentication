@@ -24,9 +24,13 @@ var (
 // Default policy bounds.
 const (
 	defaultMinLength = 12
-	// defaultMaxLength caps length to avoid surprises with hashers that silently
-	// truncate long inputs (e.g. bcrypt at 72 bytes). The exact hasher is an
-	// infrastructure concern; the policy just sets a sane upper bound.
+	// defaultMaxLength is a sane upper bound (rune count) to bound input and
+	// avoid DoS from pathologically long passwords; it is NOT a hasher-specific
+	// guard. Length here is measured in runes, so it cannot enforce a byte limit
+	// such as bcrypt's 72-byte truncation. Hasher limits are an infrastructure
+	// concern: the hashing adapter must own them, ideally by pre-hashing the
+	// password (e.g. base64(sha256(pw)) -> bcrypt) so arbitrary-length inputs are
+	// safe and no silent truncation occurs.
 	defaultMaxLength = 72
 )
 
