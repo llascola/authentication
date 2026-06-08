@@ -32,7 +32,10 @@ var (
 	ErrEmailAlreadyVerified = errors.New("domain: email already verified")
 	ErrPhoneAlreadyVerified = errors.New("domain: phone already verified")
 	ErrPhoneNotSet          = errors.New("domain: phone not set")
+	ErrEmailUnchanged       = errors.New("domain: email unchanged")
+	ErrPhoneUnchanged       = errors.New("domain: phone unchanged")
 	ErrRoleNotAssigned      = errors.New("domain: role not assigned")
+	ErrCannotRemoveLastRole = errors.New("domain: cannot remove the last role")
 	ErrNoConfirmedFactor    = errors.New("domain: cannot enable mfa without a confirmed second factor")
 )
 
@@ -311,13 +314,19 @@ func (u *User) HasRole(r Role) bool { return slices.Contains(u.roles, r) }
 
 // --- behaviour -------------------------------------------------------------
 
-// ChangeEmail replaces the email and resets verification.
+// ChangeEmail replaces the email and resets verification. Submitting the current
+// email is rejected with ErrEmailUnchanged rather than silently dropping the
+// verified flag — a no-op change must not un-verify a proven address. Callers
+// treat this as a soft warning ("you entered your current email"), not a failure.
 func (u *User) ChangeEmail(now time.Time, email Email) error {
 	if err := u.ensureNotTerminal(); err != nil {
 		return err
 	}
 	if email.IsZero() {
 		return ErrEmailRequired
+	}
+	if email == u.email {
+		return ErrEmailUnchanged
 	}
 	u.email = email
 	u.emailVerified = false
@@ -343,12 +352,18 @@ func (u *User) VerifyEmail(now time.Time) error {
 }
 
 // SetPhone attaches or replaces the phone number and resets its verification.
+// Submitting the current number is rejected with ErrPhoneUnchanged rather than
+// silently dropping the verified flag, mirroring ChangeEmail. Callers treat it
+// as a soft warning, not a failure.
 func (u *User) SetPhone(now time.Time, phone Phone) error {
 	if err := u.ensureNotTerminal(); err != nil {
 		return err
 	}
 	if phone.IsZero() {
 		return ErrInvalidPhone
+	}
+	if u.phone != nil && *u.phone == phone {
+		return ErrPhoneUnchanged
 	}
 	p := phone
 	u.phone = &p
@@ -398,7 +413,9 @@ func (u *User) AddRole(now time.Time, r Role) error {
 	return nil
 }
 
-// RemoveRole revokes a role.
+// RemoveRole revokes a role. The last remaining role cannot be removed
+// (ErrCannotRemoveLastRole): a User always holds at least one role, matching the
+// {RoleUser} default applied at creation, so AuthZ never faces a roleless user.
 func (u *User) RemoveRole(now time.Time, r Role) error {
 	if err := u.ensureNotTerminal(); err != nil {
 		return err
@@ -406,6 +423,9 @@ func (u *User) RemoveRole(now time.Time, r Role) error {
 	idx := slices.Index(u.roles, r)
 	if idx < 0 {
 		return fmt.Errorf("%w: %q", ErrRoleNotAssigned, r)
+	}
+	if len(u.roles) == 1 {
+		return ErrCannotRemoveLastRole
 	}
 	u.roles = slices.Delete(u.roles, idx, idx+1)
 	u.touch(now)

@@ -281,17 +281,19 @@ func TestChangeEmail(t *testing.T) {
 // Resubmitting the current email is not a no-op: it resets verification. Pins
 // the deliberate behaviour so any move to a same-value short-circuit is a
 // conscious change, not a silent regression.
-func TestChangeEmailToSameValueResetsVerification(t *testing.T) {
+// Re-submitting the current email is rejected with ErrEmailUnchanged and must
+// NOT drop the verified flag — a no-op change cannot un-verify a proven address.
+func TestChangeEmailToSameValueRejected(t *testing.T) {
 	u := mustUser(t)
 	if err := u.VerifyEmail(later(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	same := u.Email()
-	if err := u.ChangeEmail(later(2*time.Hour), same); err != nil {
-		t.Fatalf("ChangeEmail(same): %v", err)
+	if err := u.ChangeEmail(later(2*time.Hour), same); !errors.Is(err, domain.ErrEmailUnchanged) {
+		t.Fatalf("ChangeEmail(same) err = %v, want ErrEmailUnchanged", err)
 	}
-	if u.EmailVerified() {
-		t.Error("re-submitting current email did not reset verification")
+	if !u.EmailVerified() {
+		t.Error("verification dropped despite rejected no-op change")
 	}
 }
 
@@ -344,9 +346,9 @@ func TestPhoneLifecycle(t *testing.T) {
 	}
 }
 
-// SetPhone to the current number is not a no-op: it resets verification. Pins
-// the deliberate behaviour, mirroring TestChangeEmailToSameValueResetsVerification.
-func TestSetPhoneToSameValueResetsVerification(t *testing.T) {
+// SetPhone to the current number is rejected with ErrPhoneUnchanged and must NOT
+// drop the verified flag, mirroring TestChangeEmailToSameValueRejected.
+func TestSetPhoneToSameValueRejected(t *testing.T) {
 	u := mustUser(t)
 	phone, _ := domain.NewPhone("+14155552671")
 	if err := u.SetPhone(later(time.Hour), phone); err != nil {
@@ -355,11 +357,11 @@ func TestSetPhoneToSameValueResetsVerification(t *testing.T) {
 	if err := u.VerifyPhone(later(2 * time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if err := u.SetPhone(later(3*time.Hour), phone); err != nil { // same number
-		t.Fatalf("SetPhone(same): %v", err)
+	if err := u.SetPhone(later(3*time.Hour), phone); !errors.Is(err, domain.ErrPhoneUnchanged) { // same number
+		t.Fatalf("SetPhone(same) err = %v, want ErrPhoneUnchanged", err)
 	}
-	if u.PhoneVerified() {
-		t.Error("re-submitting current phone did not reset verification")
+	if !u.PhoneVerified() {
+		t.Error("verification dropped despite rejected no-op change")
 	}
 }
 
@@ -456,6 +458,20 @@ func TestRoleManagement(t *testing.T) {
 
 	if err := u.RemoveRole(later(4*time.Hour), domain.RoleAdmin); !errors.Is(err, domain.ErrRoleNotAssigned) {
 		t.Errorf("err = %v, want ErrRoleNotAssigned", err)
+	}
+}
+
+// Removing the last remaining role is rejected: a User always keeps >=1 role.
+func TestRemoveLastRoleRejected(t *testing.T) {
+	u := mustUser(t) // defaults to {RoleUser}
+	if got := u.Roles(); len(got) != 1 {
+		t.Fatalf("roles = %v, want exactly 1", got)
+	}
+	if err := u.RemoveRole(later(time.Hour), domain.RoleUser); !errors.Is(err, domain.ErrCannotRemoveLastRole) {
+		t.Fatalf("err = %v, want ErrCannotRemoveLastRole", err)
+	}
+	if !u.HasRole(domain.RoleUser) {
+		t.Error("role removed despite rejection")
 	}
 }
 
