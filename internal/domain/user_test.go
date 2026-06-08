@@ -135,6 +135,19 @@ func TestStatusString(t *testing.T) {
 	}
 }
 
+func TestStatusValid(t *testing.T) {
+	for _, s := range []domain.Status{
+		domain.StatusPending, domain.StatusActive, domain.StatusSuspended, domain.StatusDeactivated,
+	} {
+		if !s.Valid() {
+			t.Errorf("Status(%d) should be valid", s)
+		}
+	}
+	if domain.Status(99).Valid() {
+		t.Error("out-of-range status reported valid")
+	}
+}
+
 // --- NewUser ---------------------------------------------------------------
 
 func TestNewUser(t *testing.T) {
@@ -265,6 +278,23 @@ func TestChangeEmail(t *testing.T) {
 	}
 }
 
+// Resubmitting the current email is not a no-op: it resets verification. Pins
+// the deliberate behaviour so any move to a same-value short-circuit is a
+// conscious change, not a silent regression.
+func TestChangeEmailToSameValueResetsVerification(t *testing.T) {
+	u := mustUser(t)
+	if err := u.VerifyEmail(later(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	same := u.Email()
+	if err := u.ChangeEmail(later(2*time.Hour), same); err != nil {
+		t.Fatalf("ChangeEmail(same): %v", err)
+	}
+	if u.EmailVerified() {
+		t.Error("re-submitting current email did not reset verification")
+	}
+}
+
 // --- Phone -----------------------------------------------------------------
 
 func TestPhoneLifecycle(t *testing.T) {
@@ -314,6 +344,25 @@ func TestPhoneLifecycle(t *testing.T) {
 	}
 }
 
+// SetPhone to the current number is not a no-op: it resets verification. Pins
+// the deliberate behaviour, mirroring TestChangeEmailToSameValueResetsVerification.
+func TestSetPhoneToSameValueResetsVerification(t *testing.T) {
+	u := mustUser(t)
+	phone, _ := domain.NewPhone("+14155552671")
+	if err := u.SetPhone(later(time.Hour), phone); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.VerifyPhone(later(2 * time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.SetPhone(later(3*time.Hour), phone); err != nil { // same number
+		t.Fatalf("SetPhone(same): %v", err)
+	}
+	if u.PhoneVerified() {
+		t.Error("re-submitting current phone did not reset verification")
+	}
+}
+
 // --- Status transitions ----------------------------------------------------
 
 func TestStatusTransitions(t *testing.T) {
@@ -347,6 +396,11 @@ func TestStatusTransitions(t *testing.T) {
 		{"same-state is noop", []step{
 			{activate, domain.StatusActive, nil},
 			{activate, domain.StatusActive, nil}, // active->active, no error
+		}},
+		{"suspended->suspended noop", []step{
+			{activate, domain.StatusActive, nil},
+			{suspend, domain.StatusSuspended, nil},
+			{suspend, domain.StatusSuspended, nil}, // suspended->suspended, no error
 		}},
 	}
 
@@ -467,6 +521,29 @@ func TestUserLockout(t *testing.T) {
 		}
 	})
 
+	t.Run("failures during an active lock extend the deadline", func(t *testing.T) {
+		u := mustUser(t)
+		for i := range 5 { // first lock
+			u.RecordFailedLogin(later(time.Duration(i) * time.Minute))
+		}
+		first, ok := u.LockedUntil()
+		if !ok {
+			t.Fatal("not locked after first window")
+		}
+		// counter reset to 0 on lock; recording more failures while still locked
+		// walks it back up and re-locks at a later deadline (self-extension).
+		for i := range 5 {
+			u.RecordFailedLogin(first.Add(-time.Minute + time.Duration(i)*time.Second))
+		}
+		second, ok := u.LockedUntil()
+		if !ok || !second.After(first) {
+			t.Errorf("re-lock during active lock = %v, want after first %v", second, first)
+		}
+		if u.FailedAttempts() != 0 {
+			t.Errorf("counter not reset on re-lock: %d", u.FailedAttempts())
+		}
+	})
+
 	t.Run("successful login clears counter and lock", func(t *testing.T) {
 		u := mustUser(t)
 		for i := range 5 {
@@ -552,9 +629,13 @@ func TestUserDisableMFA(t *testing.T) {
 		if err := u.EnableMFA(later(time.Hour), true); err != nil {
 			t.Fatal(err)
 		}
-		u.DisableMFA(later(2 * time.Hour))
+		disabledAt := later(2 * time.Hour)
+		u.DisableMFA(disabledAt)
 		if u.MFAEnabled() {
 			t.Error("mfa not disabled")
+		}
+		if !u.UpdatedAt().Equal(disabledAt) {
+			t.Errorf("updatedAt = %v, want %v", u.UpdatedAt(), disabledAt)
 		}
 	})
 
@@ -565,6 +646,63 @@ func TestUserDisableMFA(t *testing.T) {
 			t.Error("mfa should remain disabled")
 		}
 	})
+}
+
+// --- Terminal-status guard -------------------------------------------------
+
+// A deactivated account is terminal: identity, contact, role, and MFA mutators
+// must refuse with ErrUserDeactivated and leave state untouched. Void mutators
+// (DisableMFA, RecordFailed/SuccessfulLogin) are deliberately not guarded and
+// are excluded here.
+func TestMutatorsRejectedOnDeactivated(t *testing.T) {
+	deactivated := func(t *testing.T) *domain.User {
+		t.Helper()
+		u := mustUser(t) // pending
+		if err := u.Deactivate(later(time.Hour)); err != nil {
+			t.Fatalf("Deactivate: %v", err)
+		}
+		return u
+	}
+
+	phone, _ := domain.NewPhone("+14155552671")
+
+	mutators := map[string]func(*domain.User) error{
+		"ChangeEmail": func(u *domain.User) error { return u.ChangeEmail(later(2*time.Hour), mustEmail(t, "new@example.com")) },
+		"VerifyEmail": func(u *domain.User) error { return u.VerifyEmail(later(2 * time.Hour)) },
+		"SetPhone":    func(u *domain.User) error { return u.SetPhone(later(2*time.Hour), phone) },
+		"VerifyPhone": func(u *domain.User) error { return u.VerifyPhone(later(2 * time.Hour)) },
+		"AddRole":     func(u *domain.User) error { return u.AddRole(later(2*time.Hour), domain.RoleAdmin) },
+		"RemoveRole":  func(u *domain.User) error { return u.RemoveRole(later(2*time.Hour), domain.RoleUser) },
+		"EnableMFA":   func(u *domain.User) error { return u.EnableMFA(later(2*time.Hour), true) },
+	}
+
+	for name, mutate := range mutators {
+		t.Run(name, func(t *testing.T) {
+			u := deactivated(t)
+			if err := mutate(u); !errors.Is(err, domain.ErrUserDeactivated) {
+				t.Fatalf("err = %v, want ErrUserDeactivated", err)
+			}
+			// state untouched: still the original identity, no side effects.
+			if u.Status() != domain.StatusDeactivated {
+				t.Errorf("status = %v, want deactivated", u.Status())
+			}
+			if u.Email().String() != "user@example.com" {
+				t.Errorf("email mutated: %q", u.Email())
+			}
+			if u.EmailVerified() {
+				t.Error("email verified despite rejection")
+			}
+			if _, ok := u.Phone(); ok {
+				t.Error("phone set despite rejection")
+			}
+			if u.HasRole(domain.RoleAdmin) || !u.HasRole(domain.RoleUser) {
+				t.Errorf("roles mutated: %v", u.Roles())
+			}
+			if u.MFAEnabled() {
+				t.Error("mfa enabled despite rejection")
+			}
+		})
+	}
 }
 
 // --- Reconstitute ----------------------------------------------------------

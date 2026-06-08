@@ -88,6 +88,31 @@ func TestTokenHashBytesIsolation(t *testing.T) {
 	}
 }
 
+func TestTokenHashEqual(t *testing.T) {
+	h := mustTokenHash(t, []byte("token-hash"))
+
+	tests := []struct {
+		name  string
+		other domain.TokenHash
+		want  bool
+	}{
+		{"same bytes", mustTokenHash(t, []byte("token-hash")), true},
+		{"different bytes same length", mustTokenHash(t, []byte("token-XXXX")), false},
+		{"different length", mustTokenHash(t, []byte("token")), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := h.Equal(tc.other); got != tc.want {
+				t.Errorf("Equal = %v, want %v", got, tc.want)
+			}
+			// symmetric
+			if got := tc.other.Equal(h); got != tc.want {
+				t.Errorf("Equal (reversed) = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // --- AuthLevel -------------------------------------------------------------
 
 func TestAuthLevel(t *testing.T) {
@@ -454,6 +479,21 @@ func TestSessionStepUp(t *testing.T) {
 		}
 		if !s.UsedMethod(domain.AuthMethodOTP) || !s.UsedMethod(domain.AuthMethodPassword) {
 			t.Errorf("amr = %v, want pwd+otp", s.AMR())
+		}
+	})
+
+	t.Run("does not slide idle deadline or lastSeenAt", func(t *testing.T) {
+		s := mustSession(t)
+		idleBefore := s.IdleExpiry()
+		seenBefore := s.LastSeenAt()
+		if err := s.StepUp(timeFixed().Add(time.Minute), domain.AAL2, domain.AuthMethodOTP); err != nil {
+			t.Fatalf("StepUp: %v", err)
+		}
+		if !s.IdleExpiry().Equal(idleBefore) {
+			t.Errorf("idleExpiry moved on StepUp: %v, want %v", s.IdleExpiry(), idleBefore)
+		}
+		if !s.LastSeenAt().Equal(seenBefore) {
+			t.Errorf("lastSeenAt moved on StepUp: %v, want %v", s.LastSeenAt(), seenBefore)
 		}
 	})
 

@@ -238,7 +238,7 @@ func TestRecoveryCodesGetterIsCopy(t *testing.T) {
 	// the returned slice is a fresh header: appending to it must not grow the
 	// aggregate's own slice.
 	got := s.Codes()
-	got = append(got, got[0])
+	_ = append(got, got[0])
 	if len(s.Codes()) != 2 {
 		t.Errorf("aggregate codes = %d, want 2 (append to copy leaked)", len(s.Codes()))
 	}

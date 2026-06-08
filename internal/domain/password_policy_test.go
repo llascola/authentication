@@ -108,6 +108,21 @@ func TestPasswordPolicyValidate(t *testing.T) {
 	}
 }
 
+// --- Validate (no upper bound) ---------------------------------------------
+
+func TestPasswordPolicyValidateNoMaxLength(t *testing.T) {
+	// maxLength 0 disables the upper bound: an arbitrarily long password passes
+	// the length rules (only the minimum applies).
+	policy, err := domain.NewPasswordPolicy(domain.WithMinLength(8), domain.WithMaxLength(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("a", 10_000)
+	if err := policy.Validate(long); err != nil {
+		t.Errorf("Validate(len=%d) = %v, want nil with max disabled", len(long), err)
+	}
+}
+
 // --- Validate (aggregation) ------------------------------------------------
 
 func TestPasswordPolicyAggregatesViolations(t *testing.T) {

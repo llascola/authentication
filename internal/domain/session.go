@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -68,6 +69,15 @@ func NewTokenHash(hash []byte) (TokenHash, error) {
 // Bytes returns a copy; the internal slice is not exposed.
 func (h TokenHash) Bytes() []byte { return append([]byte(nil), h.value...) }
 func (h TokenHash) IsZero() bool  { return len(h.value) == 0 }
+
+// Equal reports whether h and other hold the same bytes, in constant time for
+// equal-length inputs. Use for any comparison of secret-derived material
+// (recovery-code hashes, session token hashes) to avoid leaking a match
+// position or prefix via timing. A length mismatch returns false early; lengths
+// are not secret for fixed-size hashes.
+func (h TokenHash) Equal(other TokenHash) bool {
+	return subtle.ConstantTimeCompare(h.value, other.value) == 1
+}
 
 // ---------------------------------------------------------------------------
 // AuthLevel (NIST AAL)
@@ -346,6 +356,11 @@ func (s *Session) RevokedAt() (time.Time, bool) {
 // --- queries ---------------------------------------------------------------
 
 // IsExpired reports whether the session has passed either deadline at now.
+//
+// idleExpiry is always <= absExpiry for a session built here (capped via minTime
+// at construction and on every Touch), so the idle check alone normally decides
+// expiry. The absExpiry check is defensive: it still fires if Reconstitute is
+// handed corrupt persisted state where idleExpiry was stored beyond absExpiry.
 func (s *Session) IsExpired(now time.Time) bool {
 	return now.After(s.absExpiry) || now.After(s.idleExpiry)
 }
@@ -404,6 +419,10 @@ func (s *Session) Expire(now time.Time) error {
 // the method is required and appended to the amr set (deduplicated). The level
 // only ever raises: equal level keeps the level but still records the method,
 // lower level is rejected. Fails on a non-active session or invalid inputs.
+//
+// StepUp records assurance only, not activity: it deliberately does not slide
+// the idle deadline or lastSeenAt. A caller that wants the step-up to also count
+// as activity calls Touch separately.
 func (s *Session) StepUp(now time.Time, level AuthLevel, method AuthMethod) error {
 	if !level.Valid() {
 		return fmt.Errorf("%w: %d", ErrInvalidAuthLevel, level)

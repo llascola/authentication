@@ -27,8 +27,8 @@ var (
 	ErrInvalidPhone         = errors.New("domain: invalid phone number")
 	ErrInvalidUserID        = errors.New("domain: invalid user id")
 	ErrInvalidRole          = errors.New("domain: invalid role")
-	ErrInvalidStatus        = errors.New("domain: invalid status")
 	ErrStatusTransition     = errors.New("domain: illegal status transition")
+	ErrUserDeactivated      = errors.New("domain: account is deactivated")
 	ErrEmailAlreadyVerified = errors.New("domain: email already verified")
 	ErrPhoneAlreadyVerified = errors.New("domain: phone already verified")
 	ErrPhoneNotSet          = errors.New("domain: phone not set")
@@ -313,6 +313,9 @@ func (u *User) HasRole(r Role) bool { return slices.Contains(u.roles, r) }
 
 // ChangeEmail replaces the email and resets verification.
 func (u *User) ChangeEmail(now time.Time, email Email) error {
+	if err := u.ensureNotTerminal(); err != nil {
+		return err
+	}
 	if email.IsZero() {
 		return ErrEmailRequired
 	}
@@ -325,6 +328,9 @@ func (u *User) ChangeEmail(now time.Time, email Email) error {
 // VerifyEmail marks the email as verified. A pending account is promoted to
 // active as a side effect of first verification.
 func (u *User) VerifyEmail(now time.Time) error {
+	if err := u.ensureNotTerminal(); err != nil {
+		return err
+	}
 	if u.emailVerified {
 		return ErrEmailAlreadyVerified
 	}
@@ -338,6 +344,9 @@ func (u *User) VerifyEmail(now time.Time) error {
 
 // SetPhone attaches or replaces the phone number and resets its verification.
 func (u *User) SetPhone(now time.Time, phone Phone) error {
+	if err := u.ensureNotTerminal(); err != nil {
+		return err
+	}
 	if phone.IsZero() {
 		return ErrInvalidPhone
 	}
@@ -350,6 +359,9 @@ func (u *User) SetPhone(now time.Time, phone Phone) error {
 
 // VerifyPhone marks the attached phone as verified.
 func (u *User) VerifyPhone(now time.Time) error {
+	if err := u.ensureNotTerminal(); err != nil {
+		return err
+	}
 	if u.phone == nil {
 		return ErrPhoneNotSet
 	}
@@ -372,6 +384,9 @@ func (u *User) Deactivate(now time.Time) error { return u.transition(now, Status
 
 // AddRole grants a role; assigning an already-held role is a no-op.
 func (u *User) AddRole(now time.Time, r Role) error {
+	if err := u.ensureNotTerminal(); err != nil {
+		return err
+	}
 	if !r.Valid() {
 		return fmt.Errorf("%w: %q", ErrInvalidRole, r)
 	}
@@ -385,6 +400,9 @@ func (u *User) AddRole(now time.Time, r Role) error {
 
 // RemoveRole revokes a role.
 func (u *User) RemoveRole(now time.Time, r Role) error {
+	if err := u.ensureNotTerminal(); err != nil {
+		return err
+	}
 	idx := slices.Index(u.roles, r)
 	if idx < 0 {
 		return fmt.Errorf("%w: %q", ErrRoleNotAssigned, r)
@@ -406,6 +424,11 @@ func (u *User) IsLocked(now time.Time) bool {
 // account once it reaches the threshold, resetting the counter so the next
 // window starts clean. Callers (the login use-case) treat a locked account the
 // same as bad credentials, never disclosing the lock, to avoid user enumeration.
+//
+// It is intentionally unguarded against an already-locked account: a caller that
+// records failures during an active lock walks the counter up again and re-locks
+// at a fresh, later deadline, extending the lockout. That self-extension is the
+// desired behaviour for an attacker hammering a locked account.
 func (u *User) RecordFailedLogin(now time.Time) {
 	u.failedAttempts++
 	if u.failedAttempts >= maxFailedLogins {
@@ -436,6 +459,9 @@ func (u *User) RecordSuccessfulLogin(now time.Time) {
 // NOTE: enabling MFA does not retroactively raise existing AAL1 sessions; any
 // "force step-up of live sessions" policy is a session/application concern.
 func (u *User) EnableMFA(now time.Time, hasConfirmedFactor bool) error {
+	if err := u.ensureNotTerminal(); err != nil {
+		return err
+	}
 	if u.mfaEnabled {
 		return nil
 	}
@@ -459,9 +485,8 @@ func (u *User) DisableMFA(now time.Time) {
 // --- internals -------------------------------------------------------------
 
 func (u *User) transition(now time.Time, next Status) error {
-	if !next.Valid() {
-		return fmt.Errorf("%w: %q", ErrInvalidStatus, next)
-	}
+	// next is always a valid Status: the only callers (Activate/Suspend/
+	// Deactivate) pass package constants. Legality is decided by canTransitionTo.
 	if u.status == next {
 		return nil
 	}
@@ -474,6 +499,17 @@ func (u *User) transition(now time.Time, next Status) error {
 }
 
 func (u *User) touch(now time.Time) { u.updatedAt = now }
+
+// ensureNotTerminal rejects mutations on a closed (deactivated) account.
+// Deactivated is terminal (see allowedTransitions), so identity, contact, role,
+// and MFA changes are refused once an account is closed. Status transitions
+// themselves are exempt — they go through transition, which enforces legality.
+func (u *User) ensureNotTerminal() error {
+	if u.status == StatusDeactivated {
+		return ErrUserDeactivated
+	}
+	return nil
+}
 
 // clonePtr returns a pointer to a fresh copy of *p (nil stays nil). Reconstitute
 // uses it so an aggregate never aliases a caller-owned pointer: hydrating must

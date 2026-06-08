@@ -174,15 +174,22 @@ func (s *RecoveryCodeSet) Consume(now time.Time, presented TokenHash) error {
 	if presented.IsZero() {
 		return ErrRecoveryCodeInvalid
 	}
+	// Scan every unused code with no early exit: returning on first match would
+	// leak via timing which code matched and that a match exists. Constant-time
+	// hash compare (TokenHash.Equal) closes the prefix leak.
+	match := -1
 	for i := range s.codes {
 		if s.codes[i].IsUsed() {
 			continue
 		}
-		if bytes.Equal(s.codes[i].hash.Bytes(), presented.Bytes()) {
-			used := now
-			s.codes[i].usedAt = &used
-			return nil
+		if s.codes[i].hash.Equal(presented) {
+			match = i
 		}
 	}
-	return ErrRecoveryCodeInvalid
+	if match < 0 {
+		return ErrRecoveryCodeInvalid
+	}
+	used := now
+	s.codes[match].usedAt = &used
+	return nil
 }
