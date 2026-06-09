@@ -1,11 +1,3 @@
-// Package domain holds the core business entities and rules of the auth
-// server. It is dependency-free (stdlib + uuid only) and knows nothing about
-// transport, storage, or specific authentication mechanisms.
-//
-// The User aggregate models an *identity*, deliberately decoupled from any
-// single authentication method. Credentials (password, OAuth links, OTP, ...)
-// are separate entities that reference a User by ID, so the same identity can
-// own many auth methods at once.
 package domain
 
 import (
@@ -198,9 +190,12 @@ func (r Role) Valid() bool {
 // User (aggregate root)
 // ---------------------------------------------------------------------------
 
-// User is the identity aggregate. Fields are private so every mutation goes
-// through a method that preserves invariants; the type makes illegal states
-// hard to represent. Read access is via getters.
+// User is the identity aggregate, deliberately decoupled from any single
+// authentication method: credentials (password, OAuth links, OTP, ...) are
+// separate entities that reference a User by ID, so one identity can own many
+// auth methods at once. Fields are private so every mutation goes through a
+// method that preserves invariants; the type makes illegal states hard to
+// represent. Read access is via getters.
 type User struct {
 	id            UserID
 	email         Email
