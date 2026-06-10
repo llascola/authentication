@@ -43,8 +43,9 @@ const (
 // UserID
 // ---------------------------------------------------------------------------
 
-// UserID is the opaque, globally-unique identity key. It is the only required
-// identifier of a User, allowing identities that have no email-backed login.
+// UserID is the opaque, globally-unique identity key: the stable handle every
+// other aggregate uses to reference a User. It is assigned once at creation and
+// never changes, even as email, phone, or credentials do.
 type UserID uuid.UUID
 
 // NewUserID returns a fresh random (v4) identity key.
@@ -240,10 +241,10 @@ func NewUser(now time.Time, email Email, roles ...Role) (*User, error) {
 	}, nil
 }
 
-// Reconstitute rebuilds a User from persisted state without running creation
+// ReconstituteUser rebuilds a User from persisted state without running creation
 // invariants. It is intended solely for the repository/persistence layer when
 // hydrating an already-valid aggregate from storage.
-func Reconstitute(
+func ReconstituteUser(
 	id UserID,
 	email Email,
 	emailVerified bool,

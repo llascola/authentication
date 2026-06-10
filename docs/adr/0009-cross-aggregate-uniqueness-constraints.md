@@ -16,8 +16,9 @@ These rules still have to hold. They are the contract the `internal/port`
 repository interfaces and their adapters must honour. This ADR catalogues the
 full set in one place so the rules do not fragment across adapters, and records
 the product decisions behind the soft ones. It is the reference for the ports
-layer; the matching `Err*` conflict sentinels are defined in `internal/port`
-beside the repository interfaces.
+layer; the matching `Err*` conflict sentinels will be defined in `internal/port`
+beside the repository interfaces (not yet present — `internal/port` currently
+holds only the `Authenticator` port).
 
 ## Decision
 

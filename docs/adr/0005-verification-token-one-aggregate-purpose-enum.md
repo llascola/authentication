@@ -41,4 +41,5 @@ Supporting decisions:
   purpose)" cannot be enforced inside a single aggregate (it can't see its
   siblings). It must be enforced in the repository/app layer
   (invalidate-prior-on-issue, or a unique partial index on unconsumed rows).
-  This is recorded as a TODO in the code.
+  This is now specified as a repository contract in ADR 0009; the
+  `VerificationToken` doc comment points there.

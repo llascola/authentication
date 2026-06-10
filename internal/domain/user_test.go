@@ -582,7 +582,7 @@ func TestUserIsLockedAutoExpires(t *testing.T) {
 	// reconstitute a user whose lock deadline is in the past: reads as unlocked
 	// without any mutation, exercising the time-derived auto-unlock.
 	past := timeFixed().Add(-time.Hour)
-	u := domain.Reconstitute(
+	u := domain.ReconstituteUser(
 		domain.NewUserID(), mustEmail(t, "locked@example.com"),
 		true, nil, false, domain.StatusActive, []domain.Role{domain.RoleUser},
 		false, 0, &past,
@@ -723,12 +723,12 @@ func TestMutatorsRejectedOnDeactivated(t *testing.T) {
 
 // --- Reconstitute ----------------------------------------------------------
 
-func TestReconstitute(t *testing.T) {
+func TestReconstituteUser(t *testing.T) {
 	id := domain.NewUserID()
 	phone, _ := domain.NewPhone("+14155552671")
 	roles := []domain.Role{domain.RoleAdmin}
 
-	u := domain.Reconstitute(
+	u := domain.ReconstituteUser(
 		id,
 		mustEmail(t, "rehydrated@example.com"),
 		true,
@@ -758,7 +758,7 @@ func TestReconstituteIsolatesOptionalPointers(t *testing.T) {
 	phone, _ := domain.NewPhone("+14155552671")
 	lock := timeFixed().Add(time.Hour)
 
-	u := domain.Reconstitute(
+	u := domain.ReconstituteUser(
 		domain.NewUserID(), mustEmail(t, "a@b.com"),
 		true, &phone, true, domain.StatusActive,
 		[]domain.Role{domain.RoleUser}, false, 0, &lock,
