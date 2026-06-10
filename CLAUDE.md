@@ -84,7 +84,7 @@ ADR that supersedes it rather than editing the old one. Current set covers:
 layering (0001), clock injection (0002), New*/Reconstitute* (0003), typed
 credentials (0004), VerificationToken (0005), password length/Unicode (0006),
 password hashing (0007), concurrency contract (0008), cross-aggregate
-uniqueness/constraints (0009).
+uniqueness/constraints (0009), account lifecycle/lockout/roles (0010).
 
 ## Commits
 
