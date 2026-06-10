@@ -98,10 +98,19 @@ func NewPasswordPolicy(opts ...PolicyOption) (PasswordPolicy, error) {
 	return p, nil
 }
 
-// DefaultPasswordPolicy returns a sensible baseline: 12-128 characters requiring
-// upper, lower, and a digit (no symbol requirement). It cannot fail.
+// DefaultPasswordPolicy returns the NIST-aligned baseline: 12-128 characters and
+// no character-composition rules (ADR 0011). NIST SP 800-63B says verifiers
+// SHOULD NOT impose composition rules (mixtures of character types); length plus
+// breach screening is what buys security, not forced classes. So the default
+// accepts long passphrases that class rules would wrongly reject. Composition is
+// still available for compliance regimes that mandate it (PCI-DSS, some audits)
+// by opting in: NewPasswordPolicy(RequireUpper(), RequireLower(), ...).
+//
+// The complementary breach-screening control NIST relies on lives behind the
+// port.PasswordScreener interface, applied by the application layer; it is not a
+// domain concern. It cannot fail.
 func DefaultPasswordPolicy() PasswordPolicy {
-	p, _ := NewPasswordPolicy(RequireUpper(), RequireLower(), RequireDigit())
+	p, _ := NewPasswordPolicy()
 	return p
 }
 

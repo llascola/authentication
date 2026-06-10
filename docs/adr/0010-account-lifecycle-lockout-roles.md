@@ -1,6 +1,6 @@
 # 0010. Account lifecycle: status transitions, lockout policy, role set
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-06-09
 
 ## Context

@@ -19,4 +19,5 @@ Format: lightweight [MADR](https://adr.github.io/madr/). Filename
 | [0007](0007-password-hashing-prehash-bcrypt-argon2id.md) | Password hashing: pre-hash bcrypt or argon2id | Accepted |
 | [0008](0008-aggregate-concurrency-contract.md) | Aggregates assume serialized read-modify-write | Accepted |
 | [0009](0009-cross-aggregate-uniqueness-constraints.md) | Cross-aggregate uniqueness & constraints (repository layer) | Accepted |
-| [0010](0010-account-lifecycle-lockout-roles.md) | Account lifecycle: status transitions, lockout policy, role set | Proposed |
+| [0010](0010-account-lifecycle-lockout-roles.md) | Account lifecycle: status transitions, lockout policy, role set | Accepted |
+| [0011](0011-nist-aligned-default-no-composition-rules.md) | NIST-aligned default password policy + breach-screen port | Accepted |

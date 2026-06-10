@@ -56,11 +56,13 @@ func TestDefaultPasswordPolicy(t *testing.T) {
 	if p.MinLength() != 12 || p.MaxLength() != 128 {
 		t.Errorf("default bounds = %d/%d, want 12/128", p.MinLength(), p.MaxLength())
 	}
-	if !p.RequiresUpper() || !p.RequiresLower() || !p.RequiresDigit() {
-		t.Error("default should require upper/lower/digit")
+	// NIST-aligned (ADR 0011): no composition rules in the default.
+	if p.RequiresUpper() || p.RequiresLower() || p.RequiresDigit() || p.RequiresSymbol() {
+		t.Error("default must impose no character-composition rules")
 	}
-	if p.RequiresSymbol() {
-		t.Error("default should not require symbol")
+	// A long passphrase with no digit or uppercase must pass the default.
+	if err := p.Validate("correct horse battery staple"); err != nil {
+		t.Errorf("default rejected a valid passphrase: %v", err)
 	}
 }
 
