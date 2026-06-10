@@ -24,14 +24,15 @@ var (
 // Default policy bounds.
 const (
 	defaultMinLength = 12
-	// defaultMaxLength is a sane upper bound (rune count) to bound input and
-	// avoid DoS from pathologically long passwords; it is NOT a hasher-specific
-	// guard. Length here is measured in runes, so it cannot enforce a byte limit
-	// such as bcrypt's 72-byte truncation. Hasher limits are an infrastructure
-	// concern: the hashing adapter must own them, ideally by pre-hashing the
-	// password (e.g. base64(sha256(pw)) -> bcrypt) so arbitrary-length inputs are
-	// safe and no silent truncation occurs.
-	defaultMaxLength = 72
+	// defaultMaxLength is a UX/DoS bound on rune count, NOT a hasher guard (ADR
+	// 0006). It clears the NIST 800-63B / OWASP floor (>=64) with headroom for
+	// passphrases. Length is counted in runes, so it deliberately cannot — and
+	// must not — encode a hasher byte limit such as bcrypt's 72-byte truncation:
+	// that limit is infrastructure's concern, removed by pre-hashing the password
+	// (base64(sha256(pw)) -> bcrypt) or using argon2id (ADR 0007). The count is on
+	// the caller-supplied plaintext, which must already be NFC-normalized (the
+	// domain does not normalize; see Validate).
+	defaultMaxLength = 128
 )
 
 // ---------------------------------------------------------------------------
@@ -97,7 +98,7 @@ func NewPasswordPolicy(opts ...PolicyOption) (PasswordPolicy, error) {
 	return p, nil
 }
 
-// DefaultPasswordPolicy returns a sensible baseline: 12-72 characters requiring
+// DefaultPasswordPolicy returns a sensible baseline: 12-128 characters requiring
 // upper, lower, and a digit (no symbol requirement). It cannot fail.
 func DefaultPasswordPolicy() PasswordPolicy {
 	p, _ := NewPasswordPolicy(RequireUpper(), RequireLower(), RequireDigit())
@@ -119,6 +120,10 @@ func (p PasswordPolicy) RequiresSymbol() bool { return p.requireSymbol }
 // violation joined into a single error (errors.Join), or nil if it passes. Test
 // individual rules with errors.Is, list all with the joined error's message.
 // Length is measured in runes, so multi-byte characters count as one.
+//
+// Validate does NOT normalize: it counts the plaintext exactly as given. Callers
+// must pass NFC-normalized input (ADR 0006), so a precomposed and a decomposed
+// form of the same text count identically and hash identically downstream.
 func (p PasswordPolicy) Validate(plaintext string) error {
 	var hasUpper, hasLower, hasDigit, hasSymbol bool
 	length := 0

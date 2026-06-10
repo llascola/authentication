@@ -111,10 +111,10 @@ func (p Purpose) TTL() (time.Duration, bool) {
 // tokens. The aggregate enforces single-use and time-bounded consumption; it
 // references its owning User by ID only, never embedding the User aggregate.
 //
-// TODO: "at most one active token per (userID, purpose)" is not a domain
-// invariant here — a single VerificationToken cannot see its siblings. Enforce
-// it in the repository/application layer (e.g. invalidate prior tokens on
-// issue, or a unique partial index on unconsumed rows).
+// "At most one active token per (userID, purpose)" is not a domain invariant
+// here — a single VerificationToken cannot see its siblings. It is a repository
+// contract: see ADR 0009 (invalidate prior unconsumed tokens on issue, backed by
+// a partial unique index on unconsumed rows).
 type VerificationToken struct {
 	id         VerificationTokenID
 	userID     UserID

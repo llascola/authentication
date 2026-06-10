@@ -16,8 +16,9 @@ spans the infra/app/front-end layers; the domain stays hasher-agnostic.
 - **Length cap is 128 runes (code points), not bytes.** This clears the
   NIST 800-63B / OWASP floor (min 12, max ≥64) with comfortable headroom for
   passphrases, and is cheap because of pre-hashing (ADR 0007). The domain's
-  `PasswordPolicy.maxLength` is to be set to 128 when the policy is wired; its
-  rune cap is a DoS/UX bound only, never a hasher guard.
+  `PasswordPolicy` defaults `maxLength` to 128 (`defaultMaxLength`); its rune cap
+  is a DoS/UX bound only, never a hasher guard. The bcrypt 72-byte limit does not
+  constrain this number — pre-hashing (ADR 0007) removes it.
 - **Allow all Unicode**, including multibyte characters and emoji. NIST says
   accept all Unicode; blocking it harms non-Latin users, and emoji add entropy.
 - **NFC-normalize on both sides** — before hashing *and* before length-counting.
@@ -41,6 +42,11 @@ only one side, or count length before normalization.
   into the UI.
 - Normalization must be applied consistently in the front-end, app, and hashing
   adapter; a single missed spot reintroduces silent login failures.
-- The domain's current `Validate` counts the raw string without normalizing
-  (`password_policy.go`); either normalize there or document that callers must
-  pass NFC plaintext.
+- **Counting is on caller-supplied NFC plaintext.** `PasswordPolicy.Validate`
+  counts the string exactly as given and does **not** normalize, keeping the
+  domain dependency-free and hasher-agnostic. The application/infra layer MUST
+  NFC-normalize before calling `Validate` (and before hashing), so the rune count
+  the domain enforces matches the bytes that get hashed. A precomposed `é`
+  (U+00E9) and a decomposed `e`+U+0301 must reach the domain as the same NFC
+  form, else they count differently here and hash differently downstream. This is
+  documented on `Validate` and `defaultMaxLength`.

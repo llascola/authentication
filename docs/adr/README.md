@@ -18,3 +18,4 @@ Format: lightweight [MADR](https://adr.github.io/madr/). Filename
 | [0006](0006-password-length-and-unicode.md) | Password length cap (128 runes) and Unicode handling | Accepted |
 | [0007](0007-password-hashing-prehash-bcrypt-argon2id.md) | Password hashing: pre-hash bcrypt or argon2id | Accepted |
 | [0008](0008-aggregate-concurrency-contract.md) | Aggregates assume serialized read-modify-write | Accepted |
+| [0009](0009-cross-aggregate-uniqueness-constraints.md) | Cross-aggregate uniqueness & constraints (repository layer) | Accepted |

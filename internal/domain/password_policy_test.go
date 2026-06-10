@@ -53,8 +53,8 @@ func TestPasswordPolicyGetters(t *testing.T) {
 
 func TestDefaultPasswordPolicy(t *testing.T) {
 	p := domain.DefaultPasswordPolicy()
-	if p.MinLength() != 12 || p.MaxLength() != 72 {
-		t.Errorf("default bounds = %d/%d, want 12/72", p.MinLength(), p.MaxLength())
+	if p.MinLength() != 12 || p.MaxLength() != 128 {
+		t.Errorf("default bounds = %d/%d, want 12/128", p.MinLength(), p.MaxLength())
 	}
 	if !p.RequiresUpper() || !p.RequiresLower() || !p.RequiresDigit() {
 		t.Error("default should require upper/lower/digit")
