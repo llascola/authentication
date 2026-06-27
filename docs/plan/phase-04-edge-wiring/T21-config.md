@@ -2,7 +2,7 @@
 id: T21
 phase: 04-edge-wiring
 title: Config loader
-status: todo
+status: done
 branch: phase-04-edge-wiring
 layer: cmd/server
 depends_on: []

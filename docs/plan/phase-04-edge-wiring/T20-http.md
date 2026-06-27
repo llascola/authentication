@@ -2,7 +2,7 @@
 id: T20
 phase: 04-edge-wiring
 title: HTTP handlers + router
-status: todo
+status: done
 branch: phase-04-edge-wiring
 layer: internal/adapter/http
 depends_on: [T12, T13, T14, T15, T16, T17, T18, T19]

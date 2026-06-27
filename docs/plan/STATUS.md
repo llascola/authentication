@@ -28,9 +28,9 @@ Statuses: `todo` · `in_progress` · `blocked` · `done`
 | T17 | ChangePassword use-case | 03 | phase-03-app | T06, T07, T11 | done |
 | T18 | ForgotPassword use-case | 03 | phase-03-app | T06, T08, T09 | done |
 | T19 | ResetPassword use-case | 03 | phase-03-app | T06, T07, T11 | done |
-| T20 | HTTP handlers + router | 04 | phase-04-edge-wiring | T12, T13, T14, T15, T16, T17, T18, T19 | todo |
-| T21 | Config loader | 04 | phase-04-edge-wiring | — | todo |
-| T22 | main wiring + shutdown | 04 | phase-04-edge-wiring | T20, T21 | todo |
+| T20 | HTTP handlers + router | 04 | phase-04-edge-wiring | T12, T13, T14, T15, T16, T17, T18, T19 | done |
+| T21 | Config loader | 04 | phase-04-edge-wiring | — | done |
+| T22 | main wiring + shutdown | 04 | phase-04-edge-wiring | T20, T21 | done |
 | T23 | Integration test | 05 | phase-05-verify | T22 | todo |
 | T24 | ADRs for new port shapes | 05 | phase-05-verify | T01, T02, T03 | todo |
 <!-- END TASKS -->
