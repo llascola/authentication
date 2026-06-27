@@ -49,3 +49,20 @@ func TestGenerateHashIsSHA256OfRaw(t *testing.T) {
 		t.Error("stored Hash is not SHA-256 of Raw")
 	}
 }
+
+func TestHashReproducesGenerateHash(t *testing.T) {
+	g := crypto.TokenGen{}
+	tok, err := g.Generate(ctx)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	// Re-deriving via the port method must match what Generate stored — this is
+	// the path validate-session/verify-email use on a presented token.
+	got, err := g.Hash(tok.Raw)
+	if err != nil {
+		t.Fatalf("Hash: %v", err)
+	}
+	if !got.Equal(tok.Hash) {
+		t.Error("Hash(raw) does not reproduce Generate's Hash")
+	}
+}

@@ -18,6 +18,8 @@ func (f *fakeTokenGen) Generate(context.Context) (port.GeneratedToken, error) {
 	return port.GeneratedToken{Raw: "raw-secret", Hash: f.hash}, nil
 }
 
+func (f *fakeTokenGen) Hash(string) (domain.TokenHash, error) { return f.hash, nil }
+
 func TestGeneratedTokenExposesRawAndHash(t *testing.T) {
 	var g port.TokenGenerator = &fakeTokenGen{}
 	tok, err := g.Generate(context.Background())

@@ -5,6 +5,7 @@ go 1.25.10
 require (
 	github.com/google/uuid v1.6.0
 	golang.org/x/crypto v0.53.0
+	golang.org/x/text v0.38.0
 )
 
 require (

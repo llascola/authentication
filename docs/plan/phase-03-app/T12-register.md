@@ -2,7 +2,7 @@
 id: T12
 phase: 03-app
 title: Register use-case
-status: todo
+status: done
 branch: phase-03-app
 layer: internal/app
 depends_on: [T06, T07, T08, T09, T10, T11]

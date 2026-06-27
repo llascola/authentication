@@ -32,10 +32,16 @@ func (TokenGen) Generate(_ context.Context) (port.GeneratedToken, error) {
 		return port.GeneratedToken{}, err
 	}
 	raw := base64.RawURLEncoding.EncodeToString(b[:])
-	sum := sha256.Sum256([]byte(raw))
-	h, err := domain.NewTokenHash(sum[:])
+	h, err := TokenGen{}.Hash(raw)
 	if err != nil {
 		return port.GeneratedToken{}, err
 	}
 	return port.GeneratedToken{Raw: raw, Hash: h}, nil
+}
+
+// Hash re-derives the stored TokenHash from a presented raw secret using the
+// same recipe as Generate: SHA-256 over the base64 string the client holds.
+func (TokenGen) Hash(raw string) (domain.TokenHash, error) {
+	sum := sha256.Sum256([]byte(raw))
+	return domain.NewTokenHash(sum[:])
 }

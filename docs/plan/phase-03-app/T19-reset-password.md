@@ -2,7 +2,7 @@
 id: T19
 phase: 03-app
 title: ResetPassword use-case
-status: todo
+status: done
 branch: phase-03-app
 layer: internal/app
 depends_on: [T06, T07, T11]

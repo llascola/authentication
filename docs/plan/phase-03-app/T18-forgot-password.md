@@ -2,7 +2,7 @@
 id: T18
 phase: 03-app
 title: ForgotPassword use-case
-status: todo
+status: done
 branch: phase-03-app
 layer: internal/app
 depends_on: [T06, T08, T09]
