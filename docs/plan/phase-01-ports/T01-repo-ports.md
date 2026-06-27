@@ -2,7 +2,7 @@
 id: T01
 phase: 01-ports
 title: Repository ports
-status: todo
+status: done
 branch: phase-01-ports
 layer: internal/port
 depends_on: []
