@@ -2,7 +2,7 @@
 id: T24
 phase: 05-verify
 title: ADRs for new port shapes
-status: todo
+status: done
 branch: phase-05-verify
 layer: docs/adr
 depends_on: [T01, T02, T03]

@@ -97,7 +97,9 @@ layering (0001), clock injection (0002), New*/Reconstitute* (0003), typed
 credentials (0004), VerificationToken (0005), password length/Unicode (0006),
 password hashing (0007), concurrency contract (0008), cross-aggregate
 uniqueness/constraints (0009), account lifecycle/lockout/roles (0010),
-NIST-aligned password default + breach-screen port (0011).
+NIST-aligned password default + breach-screen port (0011), repository port
+contract (0012), opaque token generation + re-hash (0013), NFC normalization
+behind a port (0014), HTTP edge security posture (0015).
 
 ## Commits
 
