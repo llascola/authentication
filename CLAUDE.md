@@ -76,6 +76,15 @@ Tests live beside code in package `domain_test` (black-box). Each file has
 (asserted with `errors.Is`), and getter-isolation tests for any slice/byte
 getter. Run `make check` before declaring done.
 
+## Plan
+
+The active implementation plan lives as a tree in `docs/plan/` — phases as
+folders, one self-contained file per task with YAML frontmatter (`id`, `status`,
+`depends_on`, `touches`, `done_when`). Start at `docs/plan/README.md` (vision,
+locked decisions, dependency graph); live progress is `docs/plan/STATUS.md`,
+regenerated from task frontmatter with `make plan-status`. Each phase gets its own
+`phase-0N-*` branch; the plan itself is committed to `main`.
+
 ## Decisions
 
 Significant decisions live as ADRs in `docs/adr/` (see its README index). Read
