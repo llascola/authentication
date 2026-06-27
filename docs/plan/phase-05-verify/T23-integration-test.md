@@ -2,7 +2,7 @@
 id: T23
 phase: 05-verify
 title: Integration test
-status: todo
+status: done
 branch: phase-05-verify
 layer: internal/adapter/http (or test/)
 depends_on: [T22]

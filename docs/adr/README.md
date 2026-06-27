@@ -21,3 +21,7 @@ Format: lightweight [MADR](https://adr.github.io/madr/). Filename
 | [0009](0009-cross-aggregate-uniqueness-constraints.md) | Cross-aggregate uniqueness & constraints (repository layer) | Accepted |
 | [0010](0010-account-lifecycle-lockout-roles.md) | Account lifecycle: status transitions, lockout policy, role set | Accepted |
 | [0011](0011-nist-aligned-default-no-composition-rules.md) | NIST-aligned default password policy + breach-screen port | Accepted |
+| [0012](0012-repository-port-contract.md) | Repository port contract: sentinel not-found, adapter-side constraints, copy-on-store | Accepted |
+| [0013](0013-opaque-token-generation-and-rehash.md) | Opaque token generation and verification re-hash recipe | Accepted |
+| [0014](0014-nfc-normalization-behind-port.md) | NFC password normalization behind a Normalizer port | Accepted |
+| [0015](0015-http-edge-security-posture.md) | HTTP edge security posture: cookies, enumeration safety, timing, session revocation | Accepted |
