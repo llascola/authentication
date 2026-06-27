@@ -2,7 +2,7 @@
 id: T10
 phase: 02-adapters
 title: System clock
-status: todo
+status: done
 branch: phase-02-adapters
 layer: internal/adapter/clock
 depends_on: [T04]

@@ -2,7 +2,7 @@
 id: T07
 phase: 02-adapters
 title: bcrypt hasher + authenticator
-status: todo
+status: done
 branch: phase-02-adapters
 layer: internal/adapter/crypto
 depends_on: [T02]

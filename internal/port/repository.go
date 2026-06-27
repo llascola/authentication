@@ -22,6 +22,9 @@ var (
 	// ErrCredentialNotFound reports that no password credential exists for the
 	// given user.
 	ErrCredentialNotFound = errors.New("port: password credential not found")
+	// ErrCredentialExists reports a uniqueness violation: a user may hold at
+	// most one password credential, and one already exists for the given user.
+	ErrCredentialExists = errors.New("port: password credential already exists")
 	// ErrSessionNotFound reports that no session matched the given token hash.
 	ErrSessionNotFound = errors.New("port: session not found")
 	// ErrTokenNotFound reports that no verification token matched the given hash.

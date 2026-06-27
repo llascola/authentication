@@ -2,7 +2,7 @@
 id: T08
 phase: 02-adapters
 title: Token generator adapter
-status: todo
+status: done
 branch: phase-02-adapters
 layer: internal/adapter/crypto
 depends_on: [T03]
