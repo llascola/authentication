@@ -441,6 +441,11 @@ func (u *User) IsLocked(now time.Time) bool {
 // window starts clean. Callers (the login use-case) treat a locked account the
 // same as bad credentials, never disclosing the lock, to avoid user enumeration.
 //
+// Unlike the identity/contact/role/MFA mutators, the lockout recorders carry no
+// ensureNotTerminal guard by design: lockout is orthogonal to Status (ADR 0010 —
+// a locked account stays Active), and the login use-case gates on Status upstream
+// before ever reaching here, so a deactivated account never enters this path.
+//
 // It is intentionally unguarded against an already-locked account: a caller that
 // records failures during an active lock walks the counter up again and re-locks
 // at a fresh, later deadline, extending the lockout. That self-extension is the
