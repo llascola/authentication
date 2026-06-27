@@ -2,7 +2,7 @@
 id: T16
 phase: 03-app
 title: Logout use-case
-status: todo
+status: done
 branch: phase-03-app
 layer: internal/app
 depends_on: [T06, T10]

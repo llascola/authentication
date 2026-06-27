@@ -16,7 +16,10 @@ make check      # fmt-check + vet + lint + test — the full gate, == CI
 ```
 
 Run `make check` before declaring work done; CI (`.github/workflows/ci.yml`)
-runs the same steps. Go 1.25.4. Runtime dependency: `github.com/google/uuid`.
+runs the same steps. Go 1.25.4. Runtime dependencies: `github.com/google/uuid`
+(domain IDs), plus two confined to single adapters — `golang.org/x/crypto`
+(bcrypt, in `adapter/crypto`) and `golang.org/x/text` (NFC, in `adapter/text`,
+behind `port.Normalizer`). The domain still imports only stdlib + uuid.
 Lint is staticcheck, pinned as a `tool` directive in `go.mod`.
 
 ## Architecture

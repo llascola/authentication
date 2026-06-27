@@ -20,14 +20,14 @@ Statuses: `todo` · `in_progress` · `blocked` · `done`
 | T09 | Stub mailer | 02 | phase-02-adapters | T05 | done |
 | T10 | System clock | 02 | phase-02-adapters | T04 | done |
 | T11 | Screener stub (no-op) | 02 | phase-02-adapters | — | done |
-| T12 | Register use-case | 03 | phase-03-app | T06, T07, T08, T09, T10, T11 | todo |
-| T13 | VerifyEmail use-case | 03 | phase-03-app | T06, T10 | todo |
-| T14 | Login use-case | 03 | phase-03-app | T06, T07, T08, T10 | todo |
-| T15 | ValidateSession use-case | 03 | phase-03-app | T06, T10 | todo |
-| T16 | Logout use-case | 03 | phase-03-app | T06, T10 | todo |
-| T17 | ChangePassword use-case | 03 | phase-03-app | T06, T07, T11 | todo |
-| T18 | ForgotPassword use-case | 03 | phase-03-app | T06, T08, T09 | todo |
-| T19 | ResetPassword use-case | 03 | phase-03-app | T06, T07, T11 | todo |
+| T12 | Register use-case | 03 | phase-03-app | T06, T07, T08, T09, T10, T11 | done |
+| T13 | VerifyEmail use-case | 03 | phase-03-app | T06, T10 | done |
+| T14 | Login use-case | 03 | phase-03-app | T06, T07, T08, T10 | done |
+| T15 | ValidateSession use-case | 03 | phase-03-app | T06, T10 | done |
+| T16 | Logout use-case | 03 | phase-03-app | T06, T10 | done |
+| T17 | ChangePassword use-case | 03 | phase-03-app | T06, T07, T11 | done |
+| T18 | ForgotPassword use-case | 03 | phase-03-app | T06, T08, T09 | done |
+| T19 | ResetPassword use-case | 03 | phase-03-app | T06, T07, T11 | done |
 | T20 | HTTP handlers + router | 04 | phase-04-edge-wiring | T12, T13, T14, T15, T16, T17, T18, T19 | todo |
 | T21 | Config loader | 04 | phase-04-edge-wiring | — | todo |
 | T22 | main wiring + shutdown | 04 | phase-04-edge-wiring | T20, T21 | todo |
