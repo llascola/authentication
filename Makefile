@@ -1,4 +1,4 @@
-.PHONY: build test vet fmt fmt-check lint vuln check ci
+.PHONY: build test vet fmt fmt-check lint vuln check ci plan-status
 
 CMDS := $(wildcard cmd/*)
 GOFILES := $(shell find . -name '*.go' -not -path './bin/*')
@@ -32,6 +32,11 @@ lint:
 # instead. Run locally any time with `make vuln`.
 vuln:
 	go tool govulncheck ./...
+
+# Regenerate docs/plan/STATUS.md from each task file's frontmatter (single
+# source of truth), rewriting the table between the BEGIN/END markers.
+plan-status:
+	go run ./tools/planstatus
 
 # Everything the blocking CI gate runs, in one local command.
 check ci: fmt-check vet lint test
