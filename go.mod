@@ -2,7 +2,10 @@ module authentication
 
 go 1.25.10
 
-require github.com/google/uuid v1.6.0
+require (
+	github.com/google/uuid v1.6.0
+	golang.org/x/crypto v0.53.0
+)
 
 require (
 	github.com/BurntSushi/toml v1.4.1-0.20240526193622-a339e1f7089c // indirect

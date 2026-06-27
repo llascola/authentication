@@ -2,7 +2,7 @@
 id: T06
 phase: 02-adapters
 title: In-memory store
-status: todo
+status: done
 branch: phase-02-adapters
 layer: internal/adapter/memory
 depends_on: [T01]

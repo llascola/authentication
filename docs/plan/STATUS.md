@@ -14,12 +14,12 @@ Statuses: `todo` · `in_progress` · `blocked` · `done`
 | T03 | TokenGenerator port | 01 | phase-01-ports | — | done |
 | T04 | Clock port | 01 | phase-01-ports | — | done |
 | T05 | Mailer port | 01 | phase-01-ports | — | done |
-| T06 | In-memory store | 02 | phase-02-adapters | T01 | todo |
-| T07 | bcrypt hasher + authenticator | 02 | phase-02-adapters | T02 | todo |
-| T08 | Token generator adapter | 02 | phase-02-adapters | T03 | todo |
-| T09 | Stub mailer | 02 | phase-02-adapters | T05 | todo |
-| T10 | System clock | 02 | phase-02-adapters | T04 | todo |
-| T11 | Screener stub (no-op) | 02 | phase-02-adapters | — | todo |
+| T06 | In-memory store | 02 | phase-02-adapters | T01 | done |
+| T07 | bcrypt hasher + authenticator | 02 | phase-02-adapters | T02 | done |
+| T08 | Token generator adapter | 02 | phase-02-adapters | T03 | done |
+| T09 | Stub mailer | 02 | phase-02-adapters | T05 | done |
+| T10 | System clock | 02 | phase-02-adapters | T04 | done |
+| T11 | Screener stub (no-op) | 02 | phase-02-adapters | — | done |
 | T12 | Register use-case | 03 | phase-03-app | T06, T07, T08, T09, T10, T11 | todo |
 | T13 | VerifyEmail use-case | 03 | phase-03-app | T06, T10 | todo |
 | T14 | Login use-case | 03 | phase-03-app | T06, T07, T08, T10 | todo |

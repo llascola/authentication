@@ -2,7 +2,7 @@
 id: T09
 phase: 02-adapters
 title: Stub mailer
-status: todo
+status: done
 branch: phase-02-adapters
 layer: internal/adapter/mailer
 depends_on: [T05]

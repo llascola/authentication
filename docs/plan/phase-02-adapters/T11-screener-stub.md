@@ -2,7 +2,7 @@
 id: T11
 phase: 02-adapters
 title: Screener stub (no-op)
-status: todo
+status: done
 branch: phase-02-adapters
 layer: internal/adapter/screener
 depends_on: []

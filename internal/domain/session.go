@@ -342,6 +342,7 @@ func (s *Session) UsedMethod(m AuthMethod) bool { return slices.Contains(s.amr, 
 func (s *Session) IssuedAt() time.Time          { return s.issuedAt }
 func (s *Session) AbsoluteExpiry() time.Time    { return s.absExpiry }
 func (s *Session) IdleExpiry() time.Time        { return s.idleExpiry }
+func (s *Session) IdleTTL() time.Duration       { return s.idleTTL }
 func (s *Session) LastSeenAt() time.Time        { return s.lastSeenAt }
 func (s *Session) Reason() string               { return s.reason }
 
