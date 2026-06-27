@@ -2,7 +2,7 @@
 id: T02
 phase: 01-ports
 title: PasswordHasher port
-status: todo
+status: done
 branch: phase-01-ports
 layer: internal/port
 depends_on: []

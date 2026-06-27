@@ -2,7 +2,7 @@
 id: T04
 phase: 01-ports
 title: Clock port
-status: todo
+status: done
 branch: phase-01-ports
 layer: internal/port
 depends_on: []
