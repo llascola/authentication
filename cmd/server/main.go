@@ -1,3 +1,105 @@
+// Command server is the composition root: the one place concrete adapters meet
+// the application use-cases. Swapping the in-memory store for Postgres, or the
+// no-op breach screener for a real one, changes only this file plus the new
+// adapter — the use-cases and domain are untouched.
 package main
 
-func main() {}
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"authentication/internal/adapter/clock"
+	"authentication/internal/adapter/crypto"
+	httpapi "authentication/internal/adapter/http"
+	"authentication/internal/adapter/mailer"
+	"authentication/internal/adapter/memory"
+	"authentication/internal/adapter/screener"
+	"authentication/internal/adapter/text"
+	"authentication/internal/app"
+	"authentication/internal/config"
+	"authentication/internal/domain"
+)
+
+const shutdownTimeout = 10 * time.Second
+
+func main() {
+	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(log)
+
+	if err := run(log); err != nil {
+		log.Error("server exited with error", "err", err)
+		os.Exit(1)
+	}
+}
+
+// run loads config, builds the server, serves, and blocks until a termination
+// signal triggers a graceful shutdown.
+func run(log *slog.Logger) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	srv := newServer(cfg, log)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	serveErr := make(chan error, 1)
+	go func() {
+		log.Info("listening", "addr", cfg.ListenAddr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serveErr:
+		return err
+	case <-ctx.Done():
+		log.Info("shutdown signal received")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	}
+}
+
+// newServer builds every adapter, wires the use-cases, mounts the router, and
+// returns a ready-but-unstarted *http.Server. It is the documented dependency
+// graph of the process and the seam tests use to assert wiring.
+func newServer(cfg config.Config, log *slog.Logger) *http.Server {
+	// Adapters (infrastructure).
+	store := memory.NewStore()
+	hasher := crypto.NewBcrypt(cfg.BcryptCost) // PasswordHasher + Authenticator
+	tokens := crypto.TokenGen{}
+	mail := mailer.NewLogMailer(log)
+	screen := screener.NoOp{}
+	normalizer := text.NFC{}
+	clk := clock.System{}
+	policy := domain.DefaultPasswordPolicy()
+
+	// Use-cases (application), each given only the ports it needs.
+	deps := httpapi.Deps{
+		Register: app.NewRegisterService(
+			store.Users(), store.Credentials(), store.Tokens(), mail, tokens, clk, normalizer, policy, screen, hasher),
+		VerifyEmail:     app.NewVerifyEmailService(store.Users(), store.Tokens(), tokens, clk),
+		Login:           app.NewLoginService(store.Users(), store.Credentials(), store.Sessions(), hasher, tokens, hasher, normalizer, clk, cfg.IdleTTL, cfg.AbsTTL),
+		ValidateSession: app.NewValidateSessionService(store.Sessions(), tokens, clk),
+		Logout:          app.NewLogoutService(store.Sessions(), tokens, clk),
+		ChangePassword:  app.NewChangePasswordService(store.Credentials(), store.Sessions(), hasher, normalizer, policy, screen, hasher, clk),
+		ForgotPassword:  app.NewForgotPasswordService(store.Users(), store.Tokens(), mail, tokens, clk),
+		ResetPassword:   app.NewResetPasswordService(store.Credentials(), store.Sessions(), store.Tokens(), tokens, normalizer, policy, screen, hasher, clk),
+	}
+	opts := httpapi.Options{CookieSecure: cfg.CookieSecure, SessionTTL: cfg.AbsTTL}
+
+	return &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           httpapi.NewRouter(deps, opts),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+}

@@ -2,7 +2,7 @@
 id: T22
 phase: 04-edge-wiring
 title: main wiring + shutdown
-status: todo
+status: done
 branch: phase-04-edge-wiring
 layer: cmd/server
 depends_on: [T20, T21]
