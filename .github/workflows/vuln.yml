@@ -1,0 +1,30 @@
+name: Vuln Scan
+
+# Dependency + stdlib vulnerability scan (govulncheck), kept separate from the
+# main CI gate. The Go vuln database is updated continuously, so a new advisory
+# can flag an unchanged tree at any time; running this on a schedule (not only
+# on code change) surfaces those, while keeping the blocking `check` gate
+# deterministic. Still runs on PRs so a vulnerable dep is caught before merge.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * *" # daily 06:17 UTC; catches advisories with no code change
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        run: make vuln

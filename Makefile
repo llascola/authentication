@@ -1,4 +1,4 @@
-.PHONY: build test vet fmt fmt-check lint check ci
+.PHONY: build test vet fmt fmt-check lint vuln check ci
 
 CMDS := $(wildcard cmd/*)
 GOFILES := $(shell find . -name '*.go' -not -path './bin/*')
@@ -24,5 +24,14 @@ fmt-check:
 lint:
 	go tool staticcheck ./...
 
-# Everything CI runs, in one local command.
+# Scan dependencies + stdlib for known vulnerabilities. govulncheck is
+# call-graph aware: it reports only vulns this code can actually reach, so a
+# finding here is real and actionable. Kept OUT of `check`/CI's blocking gate
+# on purpose: the vuln DB is live, so a newly-published advisory could fail an
+# unchanged tree. It runs as its own scheduled job (.github/workflows/vuln.yml)
+# instead. Run locally any time with `make vuln`.
+vuln:
+	go tool govulncheck ./...
+
+# Everything the blocking CI gate runs, in one local command.
 check ci: fmt-check vet lint test
