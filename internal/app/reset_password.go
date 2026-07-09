@@ -41,8 +41,11 @@ func NewResetPasswordService(
 }
 
 // ResetPassword consumes a reset token, rotates the password, and revokes every
-// session for the user. The token is consumed before the rotation, so a replay
-// cannot reset twice. Unknown, expired, consumed, or wrong-purpose tokens return
+// session for the user. The new password is validated and hashed BEFORE the
+// token is consumed, so a rejected password (too weak, breached) leaves the
+// token spendable and the user can retry on the same link — only a successful
+// rotation burns it. Consumption still precedes the rotation, so a replay cannot
+// reset twice. Unknown, expired, consumed, or wrong-purpose tokens return
 // ErrInvalidToken. Unlike ChangePassword, no session is exempt — a reset implies
 // possible compromise.
 func (s *ResetPasswordService) ResetPassword(ctx context.Context, rawToken, newPlaintext string) error {
@@ -59,6 +62,17 @@ func (s *ResetPasswordService) ResetPassword(ctx context.Context, rawToken, newP
 	if vt.Purpose() != domain.PurposePasswordReset {
 		return ErrInvalidToken
 	}
+	if !vt.IsValid(now) {
+		return ErrInvalidToken // expired or already consumed — fail before hashing
+	}
+
+	// Validate and hash the new password before consuming the token: an
+	// input-quality rejection must not burn a still-good reset link.
+	ph, err := s.pipeline.process(ctx, newPlaintext)
+	if err != nil {
+		return err
+	}
+
 	if err := vt.Consume(now); err != nil {
 		return ErrInvalidToken
 	}
@@ -66,10 +80,6 @@ func (s *ResetPasswordService) ResetPassword(ctx context.Context, rawToken, newP
 		return err
 	}
 
-	ph, err := s.pipeline.process(ctx, newPlaintext)
-	if err != nil {
-		return err
-	}
 	cred, err := s.creds.FindByUserID(ctx, vt.UserID())
 	if err != nil {
 		return err
