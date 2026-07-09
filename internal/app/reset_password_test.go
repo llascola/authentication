@@ -83,4 +83,9 @@ func TestResetPasswordWeakNew(t *testing.T) {
 	if err := h.reset.ResetPassword(ctx, tok, "short"); !errors.Is(err, domain.ErrPasswordTooShort) {
 		t.Errorf("weak new = %v, want ErrPasswordTooShort", err)
 	}
+	// A rejected password must NOT burn the reset link: retrying on the same
+	// token with a valid password succeeds.
+	if err := h.reset.ResetPassword(ctx, tok, newPassword); err != nil {
+		t.Errorf("retry after weak = %v, want nil (token must survive rejection)", err)
+	}
 }
