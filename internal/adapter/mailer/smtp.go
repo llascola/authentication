@@ -29,13 +29,25 @@ type SmtpMailer struct {
 	addr      string // host:port of the SMTP server
 	host      string // host alone, for TLS ServerName + PLAIN auth realm
 	auth      smtp.Auth
-	from      string   // header + envelope From
-	verifyURL *url.URL // base for email-verification links
-	resetURL  *url.URL // base for password-reset links
+	from      string      // header + envelope From
+	verifyURL *url.URL    // base for email-verification links
+	resetURL  *url.URL    // base for password-reset links
+	tlsConfig *tls.Config // STARTTLS config; nil ⇒ a strict default is used
 
 	// send is the transport. Real construction wires it to deliverSTARTTLS;
 	// tests swap it (see export_test.go) to capture messages without a network.
 	send sendFn
+}
+
+// Option customises an SmtpMailer at construction. Production wiring passes
+// none; the defaults are the strict, secure ones.
+type Option func(*SmtpMailer)
+
+// WithTLSConfig overrides the STARTTLS configuration. Intended for integration
+// tests that must trust a local server's self-signed certificate; production
+// leaves it unset and gets ServerName pinning with a TLS 1.2 floor.
+func WithTLSConfig(cfg *tls.Config) Option {
+	return func(m *SmtpMailer) { m.tlsConfig = cfg }
 }
 
 // sendFn delivers an already-rendered RFC-5322 message. from/to are envelope
@@ -47,7 +59,7 @@ type sendFn func(ctx context.Context, from, to string, msg []byte) error
 // host:port; verifyBase/resetBase are the https frontend URLs the token is
 // appended to as ?token=... A non-https base is rejected — the link carries a
 // secret and must never travel in cleartext.
-func NewSmtpMailer(addr, username, password, from, verifyBase, resetBase string) (*SmtpMailer, error) {
+func NewSmtpMailer(addr, username, password, from, verifyBase, resetBase string, opts ...Option) (*SmtpMailer, error) {
 	host, port, ok := strings.Cut(addr, ":")
 	if !ok || host == "" || port == "" {
 		return nil, fmt.Errorf("mailer: addr %q must be host:port", addr)
@@ -73,6 +85,9 @@ func NewSmtpMailer(addr, username, password, from, verifyBase, resetBase string)
 		resetURL:  resetURL,
 	}
 	m.send = m.deliverSTARTTLS
+	for _, opt := range opts {
+		opt(m)
+	}
 	return m, nil
 }
 
@@ -118,7 +133,11 @@ func (m *SmtpMailer) deliverSTARTTLS(ctx context.Context, from, to string, msg [
 	if ok, _ := c.Extension("STARTTLS"); !ok {
 		return fmt.Errorf("mailer: server %s does not support STARTTLS", m.addr)
 	}
-	if err := c.StartTLS(&tls.Config{ServerName: m.host, MinVersion: tls.VersionTLS12}); err != nil {
+	tlsConfig := m.tlsConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{ServerName: m.host, MinVersion: tls.VersionTLS12}
+	}
+	if err := c.StartTLS(tlsConfig); err != nil {
 		return fmt.Errorf("mailer: starttls: %w", err)
 	}
 	if ok, _ := c.Extension("AUTH"); ok {

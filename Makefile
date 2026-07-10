@@ -1,4 +1,4 @@
-.PHONY: build test vet fmt fmt-check lint vuln check ci plan-status
+.PHONY: build test test-integration vet fmt fmt-check lint vuln check ci plan-status
 
 CMDS := $(wildcard cmd/*)
 GOFILES := $(shell find . -name '*.go' -not -path './bin/*')
@@ -8,6 +8,11 @@ build:
 
 test:
 	go test -race ./...
+
+# Mailer integration test against a throwaway Mailpit in Docker. Build-tagged
+# `integration`, so it is excluded from `check`/CI. Requires docker + openssl.
+test-integration:
+	./scripts/mailpit-integration.sh
 
 vet:
 	go vet ./...
