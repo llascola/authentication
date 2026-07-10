@@ -72,3 +72,47 @@ func TestLoadIdleExceedsAbs(t *testing.T) {
 		t.Error("Load with idle > abs returned nil error")
 	}
 }
+
+func TestLoadMailerDisabledByDefault(t *testing.T) {
+	t.Setenv("AUTH_SMTP_ADDR", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SMTPEnabled() {
+		t.Error("SMTPEnabled() = true with no AUTH_SMTP_ADDR, want false")
+	}
+}
+
+func TestLoadMailerFullyConfigured(t *testing.T) {
+	t.Setenv("AUTH_SMTP_ADDR", "smtp.example.com:587")
+	t.Setenv("AUTH_SMTP_USER", "user")
+	t.Setenv("AUTH_SMTP_PASS", "pass")
+	t.Setenv("AUTH_MAIL_FROM", "no-reply@example.com")
+	t.Setenv("AUTH_VERIFY_URL_BASE", "https://app.example.com/verify")
+	t.Setenv("AUTH_RESET_URL_BASE", "https://app.example.com/reset")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.SMTPEnabled() {
+		t.Error("SMTPEnabled() = false, want true")
+	}
+	if cfg.MailFrom != "no-reply@example.com" || cfg.ResetURLBase != "https://app.example.com/reset" {
+		t.Errorf("mailer fields not loaded: %+v", cfg)
+	}
+}
+
+func TestLoadMailerPartialRejected(t *testing.T) {
+	// SMTPAddr set but a required companion (from) missing -> error.
+	t.Setenv("AUTH_SMTP_ADDR", "smtp.example.com:587")
+	t.Setenv("AUTH_SMTP_USER", "user")
+	t.Setenv("AUTH_SMTP_PASS", "pass")
+	t.Setenv("AUTH_VERIFY_URL_BASE", "https://app.example.com/verify")
+	t.Setenv("AUTH_RESET_URL_BASE", "https://app.example.com/reset")
+	// AUTH_MAIL_FROM deliberately unset.
+	if _, err := config.Load(); err == nil {
+		t.Error("Load with partial mailer config returned nil error")
+	}
+}

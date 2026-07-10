@@ -23,7 +23,10 @@ func testConfig() config.Config {
 }
 
 func TestNewServerBuildsDependencyGraph(t *testing.T) {
-	srv := newServer(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv, err := newServer(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
 	if srv == nil {
 		t.Fatal("newServer returned nil")
 	}
@@ -35,8 +38,35 @@ func TestNewServerBuildsDependencyGraph(t *testing.T) {
 	}
 }
 
+func TestNewServerWithSMTPMailer(t *testing.T) {
+	cfg := testConfig()
+	cfg.SMTPAddr = "smtp.example.com:587"
+	cfg.SMTPUser, cfg.SMTPPass, cfg.MailFrom = "u", "p", "no-reply@example.com"
+	cfg.VerifyURLBase = "https://app.example.com/verify"
+	cfg.ResetURLBase = "https://app.example.com/reset"
+
+	if _, err := newServer(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		t.Fatalf("newServer with valid SMTP config: %v", err)
+	}
+}
+
+func TestNewServerRejectsBadSMTPBase(t *testing.T) {
+	cfg := testConfig()
+	cfg.SMTPAddr = "smtp.example.com:587"
+	cfg.SMTPUser, cfg.SMTPPass, cfg.MailFrom = "u", "p", "no-reply@example.com"
+	cfg.VerifyURLBase = "http://app.example.com/verify" // not https
+	cfg.ResetURLBase = "https://app.example.com/reset"
+
+	if _, err := newServer(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
+		t.Error("newServer with non-https verify base returned nil error")
+	}
+}
+
 func TestServerStartsAndShutsDownCleanly(t *testing.T) {
-	srv := newServer(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv, err := newServer(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
