@@ -24,7 +24,20 @@ type Config struct {
 	AbsTTL       time.Duration
 	BcryptCost   int
 	CookieSecure bool
+
+	// Mailer. When SMTPAddr is empty the process wires the dev-only LogMailer;
+	// when set, all other mailer fields are required and an SmtpMailer is used.
+	SMTPAddr      string
+	SMTPUser      string
+	SMTPPass      string
+	MailFrom      string
+	VerifyURLBase string
+	ResetURLBase  string
 }
+
+// SMTPEnabled reports whether a real SMTP mailer is configured. When false the
+// composition root falls back to the dev-only LogMailer.
+func (c Config) SMTPEnabled() bool { return c.SMTPAddr != "" }
 
 // Defaults applied when an env var is unset.
 const (
@@ -63,6 +76,13 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	cfg.SMTPAddr = os.Getenv("AUTH_SMTP_ADDR")
+	cfg.SMTPUser = os.Getenv("AUTH_SMTP_USER")
+	cfg.SMTPPass = os.Getenv("AUTH_SMTP_PASS")
+	cfg.MailFrom = os.Getenv("AUTH_MAIL_FROM")
+	cfg.VerifyURLBase = os.Getenv("AUTH_VERIFY_URL_BASE")
+	cfg.ResetURLBase = os.Getenv("AUTH_RESET_URL_BASE")
+
 	if cfg.IdleTTL <= 0 || cfg.AbsTTL <= 0 {
 		return Config{}, fmt.Errorf("config: session TTLs must be positive (idle=%s, abs=%s)", cfg.IdleTTL, cfg.AbsTTL)
 	}
@@ -71,6 +91,22 @@ func Load() (Config, error) {
 	}
 	if cfg.BcryptCost < minBcryptCost || cfg.BcryptCost > maxBcryptCost {
 		return Config{}, fmt.Errorf("config: bcrypt cost %d out of range [%d,%d]", cfg.BcryptCost, minBcryptCost, maxBcryptCost)
+	}
+
+	// Mailer is all-or-nothing: if an SMTP server is set, the rest must be too,
+	// so a half-configured mailer fails at startup rather than at first send.
+	if cfg.SMTPEnabled() {
+		for _, f := range []struct{ key, val string }{
+			{"AUTH_SMTP_USER", cfg.SMTPUser},
+			{"AUTH_SMTP_PASS", cfg.SMTPPass},
+			{"AUTH_MAIL_FROM", cfg.MailFrom},
+			{"AUTH_VERIFY_URL_BASE", cfg.VerifyURLBase},
+			{"AUTH_RESET_URL_BASE", cfg.ResetURLBase},
+		} {
+			if f.val == "" {
+				return Config{}, fmt.Errorf("config: %s is required when AUTH_SMTP_ADDR is set", f.key)
+			}
+		}
 	}
 
 	return cfg, nil

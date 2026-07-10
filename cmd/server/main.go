@@ -24,6 +24,7 @@ import (
 	"authentication/internal/app"
 	"authentication/internal/config"
 	"authentication/internal/domain"
+	"authentication/internal/port"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -45,7 +46,10 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	srv := newServer(cfg, log)
+	srv, err := newServer(cfg, log)
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -71,13 +75,18 @@ func run(log *slog.Logger) error {
 
 // newServer builds every adapter, wires the use-cases, mounts the router, and
 // returns a ready-but-unstarted *http.Server. It is the documented dependency
-// graph of the process and the seam tests use to assert wiring.
-func newServer(cfg config.Config, log *slog.Logger) *http.Server {
+// graph of the process and the seam tests use to assert wiring. It returns an
+// error only when a configured adapter (currently the SMTP mailer) fails to
+// build.
+func newServer(cfg config.Config, log *slog.Logger) (*http.Server, error) {
 	// Adapters (infrastructure).
 	store := memory.NewStore()
 	hasher := crypto.NewBcrypt(cfg.BcryptCost) // PasswordHasher + Authenticator
 	tokens := crypto.TokenGen{}
-	mail := mailer.NewLogMailer(log)
+	mail, err := buildMailer(cfg, log)
+	if err != nil {
+		return nil, err
+	}
 	screen := screener.NoOp{}
 	normalizer := text.NFC{}
 	clk := clock.System{}
@@ -101,5 +110,17 @@ func newServer(cfg config.Config, log *slog.Logger) *http.Server {
 		Addr:              cfg.ListenAddr,
 		Handler:           httpapi.NewRouter(deps, opts),
 		ReadHeaderTimeout: 10 * time.Second,
+	}, nil
+}
+
+// buildMailer selects the mailer implementation from config: the production
+// SmtpMailer when SMTP is configured, otherwise the dev-only LogMailer that logs
+// the raw token (ADR 0016).
+func buildMailer(cfg config.Config, log *slog.Logger) (port.Mailer, error) {
+	if !cfg.SMTPEnabled() {
+		return mailer.NewLogMailer(log), nil
 	}
+	return mailer.NewSmtpMailer(
+		cfg.SMTPAddr, cfg.SMTPUser, cfg.SMTPPass, cfg.MailFrom, cfg.VerifyURLBase, cfg.ResetURLBase,
+	)
 }
