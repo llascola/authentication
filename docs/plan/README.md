@@ -28,6 +28,12 @@ This directory is the source of truth for *execution*. Decisions live in
 | 03 | [`phase-03-app/`](phase-03-app/) | `internal/app` | `phase-03-app` | T12–T19 |
 | 04 | [`phase-04-edge-wiring/`](phase-04-edge-wiring/) | `internal/adapter/http`, `cmd/server` | `phase-04-edge-wiring` | T20–T22 |
 | 05 | [`phase-05-verify/`](phase-05-verify/) | tests, `docs/adr` | `phase-05-verify` | T23–T24 |
+| 06 | [`phase-06-flow-completion/`](phase-06-flow-completion/) | `port`, `adapter`, `app`, `adapter/http` | `phase-06-flow-completion` | T25–T32 |
+| 07 | [`phase-07-persistence/`](phase-07-persistence/) | `internal/adapter/postgres`, `cmd/server` | `phase-07-persistence` | T33–T37 |
+
+Phases 01–05 completed the slice (T01–T24). Phases 06–07 are **post-slice**: they
+close the gaps the slice deliberately left open, in the order that makes the
+server first *usable* and then *deployable*. See each phase README for the why.
 
 Live status board: [`STATUS.md`](STATUS.md).
 
@@ -90,6 +96,47 @@ graph LR
 
 **MVP cut (login provable):** T01–T04, T06–T08, T10, T12–T16, T20–T23.
 T11 stays no-op; T17–T19 deferrable.
+
+### Post-slice phases
+
+```mermaid
+graph LR
+  subgraph P6[Phase 6 flow completion]
+    T25[T25 ResendVerification]
+    T26[T26 resend endpoint]
+    T27[T27 RateLimiter port]
+    T28[T28 apply limits]
+    T29[T29 CSRF]
+    T30[T30 RevokeAllExcept]
+    T31[T31 HIBP screener]
+    T32[T32 ADRs]
+  end
+  subgraph P7[Phase 7 persistence]
+    T33[T33 schema + migrations]
+    T34[T34 pg repositories]
+    T35[T35 token/session GC]
+    T36[T36 wiring + integration]
+    T37[T37 ADRs]
+  end
+
+  T25 --> T26
+  T26 --> T28
+  T27 --> T28
+  T25 & T27 & T29 & T30 & T31 --> T32
+  T33 --> T34
+  T34 --> T35
+  T34 & T35 --> T36
+  T33 & T34 & T35 --> T37
+```
+
+**Critical path (06):** T25→T26→T28. T27 runs in parallel; T29/T30/T31 are
+independent.
+
+**Critical path (07):** T33→T34→T36.
+
+**Ship-first cut:** T25+T26+T27+T28 together. They are the pair that turns a
+permanently-stuck account into a recoverable one without opening a mail relay —
+neither half is safe to ship alone.
 
 ## Conventions
 
