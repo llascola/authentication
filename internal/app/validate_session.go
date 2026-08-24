@@ -24,12 +24,19 @@ func NewValidateSessionService(
 	return &ValidateSessionService{sessions: sessions, tokenGen: tokenGen, clock: clock}
 }
 
-// Identity is the authenticated result of a valid session: who the caller is and
-// the assurance level the session reached. Roles are read live from the User
-// elsewhere, never snapshotted here (see session.go).
+// Identity is the authenticated result of a valid session: who the caller is,
+// the assurance level the session reached, and which session it came from.
+// Roles are read live from the User elsewhere, never snapshotted here (see
+// session.go).
+//
+// SessionHash identifies the calling session by its STORED hash, never the raw
+// bearer token (ADR 0013) — so a use-case can act on "this session" (keeping it
+// alive across a password change, ADR 0017) without the secret travelling any
+// further inward than the edge that received it.
 type Identity struct {
-	UserID    domain.UserID
-	AuthLevel domain.AuthLevel
+	UserID      domain.UserID
+	AuthLevel   domain.AuthLevel
+	SessionHash domain.TokenHash
 }
 
 // Validate hashes the presented token, looks up the session, checks it is
@@ -56,5 +63,9 @@ func (s *ValidateSessionService) Validate(ctx context.Context, rawToken string) 
 	if err := s.sessions.Update(ctx, sess); err != nil {
 		return Identity{}, err
 	}
-	return Identity{UserID: sess.UserID(), AuthLevel: sess.AuthLevel()}, nil
+	return Identity{
+		UserID:      sess.UserID(),
+		AuthLevel:   sess.AuthLevel(),
+		SessionHash: sess.TokenHash(),
+	}, nil
 }

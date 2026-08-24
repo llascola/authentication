@@ -59,13 +59,27 @@ type PasswordCredentialRepository interface {
 //
 // Update serializes session touch/revoke (ADR 0008). FindByTokenHash returns
 // ErrSessionNotFound on a miss. RevokeAllForUser revokes every active session
-// for a user in one serialized operation (used by password change/reset); now
-// stamps the revocation instant and reason records why.
+// for a user in one serialized operation (used by password reset); now stamps
+// the revocation instant and reason records why.
+//
+// RevokeAllExcept is the same sweep with one session spared, identified by its
+// stored token hash — an authenticated password change should not log the user
+// out of the session they are changing it from (ADR 0017). It takes a hash, not
+// a raw token: raw bearer tokens never reach a repository (ADR 0013).
+//
+// A zero or unmatched keep hash spares nothing, making the call equivalent to
+// RevokeAllForUser. That degenerate case is deliberately the safe one: a caller
+// that fails to supply a session revokes everything rather than accidentally
+// preserving one.
+//
+// Both revoke methods leave already-revoked and expired sessions untouched, and
+// report nil when the user has no sessions at all.
 type SessionRepository interface {
 	Create(ctx context.Context, s *domain.Session) error
 	Update(ctx context.Context, s *domain.Session) error
 	FindByTokenHash(ctx context.Context, h domain.TokenHash) (*domain.Session, error)
 	RevokeAllForUser(ctx context.Context, id domain.UserID, now time.Time, reason string) error
+	RevokeAllExcept(ctx context.Context, id domain.UserID, keep domain.TokenHash, now time.Time, reason string) error
 }
 
 // VerificationTokenRepository persists the VerificationToken aggregate.

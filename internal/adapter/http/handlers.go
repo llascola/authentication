@@ -231,7 +231,9 @@ func (s *server) changePassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "malformed request"})
 		return
 	}
-	if err := s.deps.ChangePassword.ChangePassword(r.Context(), id.UserID, in.OldPassword, in.NewPassword); err != nil {
+	// The whole Identity, not just the user id: it carries the calling session's
+	// stored hash, which is how that session survives the change (ADR 0017).
+	if err := s.deps.ChangePassword.ChangePassword(r.Context(), id, in.OldPassword, in.NewPassword); err != nil {
 		writeError(w, r, err)
 		return
 	}

@@ -166,9 +166,10 @@ func TestChangePasswordRoundTrip(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("change = %d, want 204", resp.StatusCode)
 	}
-	// Strict policy: the change revoked all sessions, so /me is now 401.
-	if resp := e.get(t, "/auth/me"); resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("/me after change = %d, want 401 (sessions revoked)", resp.StatusCode)
+	// The session that made the change survives it (ADR 0017): the user stays on
+	// the page they were on, and only their other sessions are evicted.
+	if resp := e.get(t, "/auth/me"); resp.StatusCode != http.StatusOK {
+		t.Errorf("/me after change = %d, want 200 (the calling session is kept)", resp.StatusCode)
 	}
 	// The new password logs in.
 	if resp := e.post(t, "/auth/login", map[string]string{"email": "cp@example.com", "password": newPassword}); resp.StatusCode != http.StatusOK {

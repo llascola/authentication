@@ -1,6 +1,7 @@
 # 0015. HTTP edge security posture: cookies, enumeration safety, timing, session revocation
 
-- Status: Accepted
+- Status: Accepted; the session-revocation decision is superseded by
+  [0017](0017-keep-initiating-session-on-password-change.md)
 - Date: 2026-06-27
 
 ## Context
@@ -34,6 +35,9 @@ does to existing sessions.
   ResetPassword revoke *all* of the user's sessions, including the one that
   initiated the change. A password change implies the old credential may be
   compromised; no session is kept.
+  *(Superseded for ChangePassword by [ADR 0017](0017-keep-initiating-session-on-password-change.md),
+  which spares the initiating session and revokes every other. ResetPassword
+  still revokes all.)*
 - **Edge hardening.** Request bodies are size-limited (`MaxBytesReader`) with
   unknown JSON fields rejected. No proxy headers are trusted; the client IP comes
   from `RemoteAddr` only.

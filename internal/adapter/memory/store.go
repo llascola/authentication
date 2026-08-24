@@ -191,11 +191,24 @@ func (r *SessionRepo) FindByTokenHash(_ context.Context, h domain.TokenHash) (*d
 
 // RevokeAllForUser revokes every currently-active session for the user in one
 // serialized pass. Already revoked/expired sessions are left untouched.
-func (r *SessionRepo) RevokeAllForUser(_ context.Context, id domain.UserID, now time.Time, reason string) error {
+func (r *SessionRepo) RevokeAllForUser(ctx context.Context, id domain.UserID, now time.Time, reason string) error {
+	return r.RevokeAllExcept(ctx, id, domain.TokenHash{}, now, reason)
+}
+
+// RevokeAllExcept revokes every currently-active session for the user except the
+// one stored under keep, in one serialized pass. Already revoked/expired
+// sessions are left untouched.
+//
+// A zero keep spares nothing — no session can carry an empty token hash
+// (domain.NewSession rejects it), so the zero value never matches a stored key
+// and the sweep degrades to revoke-everything. That is what makes this the one
+// implementation behind both methods.
+func (r *SessionRepo) RevokeAllExcept(_ context.Context, id domain.UserID, keep domain.TokenHash, now time.Time, reason string) error {
 	r.s.mu.Lock()
 	defer r.s.mu.Unlock()
+	keepKey, sparing := tokenKey(keep), !keep.IsZero()
 	for key, s := range r.s.sessions {
-		if s.UserID() != id || s.Status() != domain.SessionActive {
+		if (sparing && key == keepKey) || s.UserID() != id || s.Status() != domain.SessionActive {
 			continue
 		}
 		// Operate on a copy, then store it, to preserve the no-shared-pointer rule.

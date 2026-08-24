@@ -24,5 +24,6 @@ Format: lightweight [MADR](https://adr.github.io/madr/). Filename
 | [0012](0012-repository-port-contract.md) | Repository port contract: sentinel not-found, adapter-side constraints, copy-on-store | Accepted |
 | [0013](0013-opaque-token-generation-and-rehash.md) | Opaque token generation and verification re-hash recipe | Accepted |
 | [0014](0014-nfc-normalization-behind-port.md) | NFC password normalization behind a Normalizer port | Accepted |
-| [0015](0015-http-edge-security-posture.md) | HTTP edge security posture: cookies, enumeration safety, timing, session revocation | Accepted |
+| [0015](0015-http-edge-security-posture.md) | HTTP edge security posture: cookies, enumeration safety, timing, session revocation | Accepted (revocation part superseded by 0017) |
 | [0016](0016-mailer-delivery-and-link-assembly.md) | Mailer delivery: in-process SMTP, adapter-assembled links, secret crosses to provider | Accepted |
+| [0017](0017-keep-initiating-session-on-password-change.md) | Keep the initiating session on an authenticated password change | Accepted |
