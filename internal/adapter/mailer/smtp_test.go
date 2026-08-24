@@ -96,6 +96,32 @@ func TestSendEmailVerificationAssemblesLink(t *testing.T) {
 	assertMessageShape(t, cap.msg, "user@example.com", "Subject: Verify your email")
 }
 
+// A From carrying a display name is valid in the header but must never reach
+// MAIL FROM, which takes a bare addr-spec: servers reject the mailbox form.
+func TestDisplayNameFromSplitsHeaderAndEnvelope(t *testing.T) {
+	const display = "Auth <no-reply@example.com>"
+	m, err := mailer.NewSmtpMailer(goodAddr, "user", "pass", display, verifyBase, resetBase)
+	if err != nil {
+		t.Fatalf("NewSmtpMailer: %v", err)
+	}
+	cap := &capture{}
+	m.SetTransportForTest(func(_ context.Context, from, to string, msg []byte) error {
+		cap.from, cap.to, cap.msg = from, to, string(msg)
+		cap.calls++
+		return nil
+	})
+
+	if err := m.SendEmailVerification(context.Background(), mkEmail(t, "user@example.com"), "tok"); err != nil {
+		t.Fatalf("SendEmailVerification: %v", err)
+	}
+	if cap.from != goodFrom {
+		t.Errorf("envelope from = %q, want bare address %q", cap.from, goodFrom)
+	}
+	if !strings.Contains(cap.msg, "From: "+display+"\r\n") {
+		t.Errorf("From header = missing %q; got:\n%s", display, cap.msg)
+	}
+}
+
 func TestSendPasswordResetAssemblesLink(t *testing.T) {
 	m, cap := newCaptured(t)
 	const token = "raw-reset-token"

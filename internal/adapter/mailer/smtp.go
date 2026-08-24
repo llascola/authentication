@@ -26,10 +26,18 @@ var _ port.Mailer = (*SmtpMailer)(nil)
 // that token in a frontend URL is a delivery concern and lives here, so
 // internal/app gains no knowledge of frontend routes (ADR 0016).
 type SmtpMailer struct {
-	addr      string // host:port of the SMTP server
-	host      string // host alone, for TLS ServerName + PLAIN auth realm
-	auth      smtp.Auth
-	from      string      // header + envelope From
+	addr string // host:port of the SMTP server
+	host string // host alone, for TLS ServerName + PLAIN auth realm
+	auth smtp.Auth
+
+	// from is the From header, which may carry a display name
+	// ("Auth <no-reply@example.com>"). envelopeFrom is the bare addr-spec for
+	// the SMTP MAIL FROM command, which accepts no display name — RFC 5321
+	// takes a Reverse-path, not an RFC 5322 mailbox. Keeping them apart lets a
+	// deployment configure a friendly sender without breaking delivery.
+	from         string
+	envelopeFrom string
+
 	verifyURL *url.URL    // base for email-verification links
 	resetURL  *url.URL    // base for password-reset links
 	tlsConfig *tls.Config // STARTTLS config; nil ⇒ a strict default is used
@@ -59,12 +67,17 @@ type sendFn func(ctx context.Context, from, to string, msg []byte) error
 // host:port; verifyBase/resetBase are the https frontend URLs the token is
 // appended to as ?token=... A non-https base is rejected — the link carries a
 // secret and must never travel in cleartext.
+//
+// from may be a bare address ("no-reply@example.com") or carry a display name
+// ("Auth <no-reply@example.com>"); the display form is used for the From header
+// and the parsed addr-spec for the SMTP envelope.
 func NewSmtpMailer(addr, username, password, from, verifyBase, resetBase string, opts ...Option) (*SmtpMailer, error) {
 	host, port, ok := strings.Cut(addr, ":")
 	if !ok || host == "" || port == "" {
 		return nil, fmt.Errorf("mailer: addr %q must be host:port", addr)
 	}
-	if _, err := mail.ParseAddress(from); err != nil {
+	fromAddr, err := mail.ParseAddress(from)
+	if err != nil {
 		return nil, fmt.Errorf("mailer: from address %q: %w", from, err)
 	}
 	verifyURL, err := parseHTTPSBase(verifyBase)
@@ -77,12 +90,13 @@ func NewSmtpMailer(addr, username, password, from, verifyBase, resetBase string,
 	}
 
 	m := &SmtpMailer{
-		addr:      addr,
-		host:      host,
-		auth:      smtp.PlainAuth("", username, password, host),
-		from:      from,
-		verifyURL: verifyURL,
-		resetURL:  resetURL,
+		addr:         addr,
+		host:         host,
+		auth:         smtp.PlainAuth("", username, password, host),
+		from:         from,
+		envelopeFrom: fromAddr.Address,
+		verifyURL:    verifyURL,
+		resetURL:     resetURL,
 	}
 	m.send = m.deliverSTARTTLS
 	for _, opt := range opts {
@@ -109,8 +123,10 @@ func (m *SmtpMailer) SendPasswordReset(ctx context.Context, to domain.Email, raw
 	return m.deliver(ctx, to.String(), "Reset your password", body)
 }
 
+// deliver renders the message with the From header and hands the transport the
+// bare envelope sender, which is what MAIL FROM requires.
 func (m *SmtpMailer) deliver(ctx context.Context, to, subject, body string) error {
-	return m.send(ctx, m.from, to, buildMessage(m.from, to, subject, body))
+	return m.send(ctx, m.envelopeFrom, to, buildMessage(m.from, to, subject, body))
 }
 
 // deliverSTARTTLS is the real transport: dial (honouring ctx), upgrade to TLS
