@@ -67,13 +67,21 @@ type PasswordCredentialRepository interface {
 // out of the session they are changing it from (ADR 0017). It takes a hash, not
 // a raw token: raw bearer tokens never reach a repository (ADR 0013).
 //
-// A zero or unmatched keep hash spares nothing, making the call equivalent to
-// RevokeAllForUser. That degenerate case is deliberately the safe one: a caller
-// that fails to supply a session revokes everything rather than accidentally
-// preserving one.
+// A zero or unmatched keep hash spares nothing. That degenerate case is
+// deliberately the safe one: a caller that fails to supply a session revokes
+// everything rather than accidentally preserving one.
 //
-// Both revoke methods leave already-revoked and expired sessions untouched, and
-// report nil when the user has no sessions at all.
+// The two revoke methods are therefore NOT independent capabilities —
+// RevokeAllForUser is exactly RevokeAllExcept with a zero keep hash, and an
+// implementation is expected to back both with one sweep rather than write the
+// loop twice. They are kept as two methods for the call sites: ResetPassword
+// revoking everything is a deliberate security decision (ADR 0015, unchanged by
+// ADR 0017), and "revoke all" states that at the call site in a way that passing
+// a zero value would not. Adding a third revoke shape is a signal to collapse
+// these into one, not to grow the interface again.
+//
+// Both leave already-revoked and expired sessions untouched, and report nil when
+// the user has no sessions at all.
 type SessionRepository interface {
 	Create(ctx context.Context, s *domain.Session) error
 	Update(ctx context.Context, s *domain.Session) error

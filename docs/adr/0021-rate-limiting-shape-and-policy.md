@@ -72,6 +72,35 @@ canonicalised through `domain.NewEmail` so case and whitespace cannot buy a
 second budget. Neither key alone is enough: the IP key misses a mail bomb sourced
 from an address pool, and the email key misses a spray across many accounts.
 
+Register is **not** email-keyed. The address on a registration is the caller's to
+invent, so a per-email bucket there would bound one made-up string rather than
+anything real.
+
+What the email key does and does not bound is worth stating exactly, because it
+is easy to overclaim. It bounds **how much forgot/reset and resend mail one
+registered address can be made to receive**. It does not bound what a *mailbox*
+receives, for two reasons:
+
+- **Registration mails arbitrary addresses.** `POST /auth/register` sends a
+  verification link to any well-formed address and is IP-keyed only, so a
+  mailbox can be sent 10 mails/hour per source IP, unbounded across IPs, each
+  also leaving a `pending` user row behind.
+- **Subaddressing defeats canonicalisation.** `domain.NewEmail` trims,
+  lowercases, and parses; it does not fold `user+1@` and `user+2@`, or Gmail's
+  dots, into one address. Each variant is a distinct key with a distinct bucket
+  and the same mailbox at the far end.
+
+Folding those is rejected: the aliasing rules are provider-specific guesswork,
+and getting them wrong merges genuinely distinct addresses into one shared
+bucket — a denial of service built to prevent one. The residual is treated as
+inherent to open registration and listed under Consequences.
+
+`POST /auth/verify-email` and `POST /auth/password/reset` are **deliberately
+absent** from the table. Both reject on a token lookup before any bcrypt hash,
+mail, or outbound call, so there is no cost for a limiter to bound, and the
+tokens themselves are 256-bit opaque values ([ADR 0013](0013-opaque-token-generation-and-rehash.md))
+where guessing is not a threat a throttle meaningfully changes.
+
 **The key is derived from the submitted value before any account lookup.** The
 natural implementation — look the account up, then throttle if found — turns the
 limiter into an existence oracle, where "throttled" means "registered". Limiting
@@ -127,6 +156,28 @@ symmetric, so the defaults should not be either.
   effective limit is N times the configured one. Acceptable for the current
   single-process deployment and the reason the port carries an error return;
   moving to Redis is an adapter swap and a config change, not a redesign.
+- **The email key on login is a targeted lockout, and we accept it.** Ten login
+  attempts a minute against a victim's address — from any source, with no
+  password knowledge and no account needed beyond knowing the address — empty
+  that address's bucket and the owner's own login answers `429`. This is the
+  price of the key that catches a distributed spray at one account, and every
+  scheme that keys on the account identifier pays it. Two things bound the
+  damage: the lockout is per-window rather than sticky (unlike the per-account
+  lockout of [ADR 0010](0010-account-lifecycle-lockout-roles.md), nothing
+  accumulates), and it costs the attacker sustained traffic to hold.
+  - Not fixed here, but recorded as the way out: `Limits.Login` is currently a
+    *single* limiter instance used with both key functions, so the IP and email
+    buckets necessarily share one limit and window. Splitting it into separate
+    policies would let the email budget run looser than the IP budget, so a lone
+    attacking IP exhausts its own bucket well before the victim's. That is a
+    config, `Limits`, and wiring change, deliberately deferred rather than done
+    silently.
+- **Mail to a mailbox is not bounded** — only mail to a registered address is.
+  See the Keying section: registration mails arbitrary addresses under an
+  IP-only key, and subaddressing yields unlimited distinct keys for one mailbox.
+  Bounding it properly means rate-limiting *account creation itself* (invite
+  codes, proof of work, a CAPTCHA) rather than tuning a limiter, which is a
+  product decision this project has not taken.
 - **A shared egress IP is the known false positive.** Ten logins per minute is
   generous for a person and tight for a NAT'd office at 09:00. The per-route
   config exists so that is tunable without a code change, but a deployment behind

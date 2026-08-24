@@ -163,6 +163,13 @@ func ipKey(r *http.Request) (string, bool) {
 // through domain.NewEmail — the same trim-and-lowercase the use-cases apply, so
 // "User@x.com" and "user@x.com" cannot buy two budgets for one address.
 //
+// Canonicalisation stops there. Provider-specific aliasing — subaddressing
+// ("user+1@"), Gmail's dot-folding — yields a distinct key per variant for what
+// may be one mailbox, and is deliberately not undone: the rules differ per
+// provider, and folding them would merge genuinely distinct addresses into a
+// shared bucket, which is its own denial of service. ADR 0021 records what that
+// leaves unbounded.
+//
 // It reads the body and puts it back, because the handler still has to decode
 // it. The read is bounded by the same maxBodyBytes the handler enforces, and an
 // oversized body yields no key: the handler's own MaxBytesReader will reject it

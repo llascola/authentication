@@ -53,7 +53,7 @@ cannon pointed at your own domain.
 Decisions this phase locked are ADRs [0017](../../adr/0017-keep-initiating-session-on-password-change.md)
 through [0021](../../adr/0021-rate-limiting-shape-and-policy.md).
 
-Two things were deliberately left open rather than silently dropped, both
+Four things were deliberately left open rather than silently dropped, all
 recorded where they will be found again:
 
 - The CSRF token cannot be *revoked*, only reissued — closing that means
@@ -64,6 +64,14 @@ recorded where they will be found again:
 - Breach screening is off by default (`AUTH_PASSWORD_SCREENER=noop`) so CI stays
   offline, which means ADR 0011's trade is unmet until a deployment turns it on.
   Startup logs a warning saying so.
+- Login's per-email rate-limit key lets anyone knowing an address hold that
+  account's login at `429`. `Limits.Login` is one limiter instance serving both
+  the IP and email keys, so the two cannot be tuned apart; splitting them is the
+  fix ([ADR 0021](../../adr/0021-rate-limiting-shape-and-policy.md) consequences).
+- Rate limiting bounds mail to a registered *address*, not to a *mailbox*:
+  registration mails arbitrary addresses under an IP-only key, and subaddressing
+  gives one mailbox unlimited distinct keys. Bounding it means limiting account
+  creation itself — a product decision, not a limiter tweak (ADR 0021).
 
 ## Explicitly not here
 

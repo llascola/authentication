@@ -20,10 +20,15 @@ import (
 //     guess each against ten thousand accounts; only the per-IP key catches
 //     that. The per-email key catches the reverse, many IPs against one account.
 //   - register — account-creation floods, each costing a bcrypt hash and a mail.
-//   - forgot / resend — mail bombing a known address, spending the deployment's
-//     SMTP quota and its domain's sending reputation. The per-email key is what
-//     bounds how much mail one address can be made to receive, however many
-//     sources ask for it.
+//     IP-keyed only: a per-email key would bound nothing here, since the address
+//     is the attacker's to vary.
+//   - forgot / resend — mail bombing a REGISTERED address, spending the
+//     deployment's SMTP quota and its domain's sending reputation. The per-email
+//     key bounds how much of that mail one registered address can be made to
+//     receive, however many sources ask for it. It does not bound what a mailbox
+//     receives overall: registration mails any well-formed address, and
+//     subaddressing (user+1@, user+2@) gives one mailbox unlimited distinct
+//     keys. See ADR 0021.
 //
 // IP is checked before email: it needs no body read, so the cheap check runs
 // first and a denial there costs nothing.

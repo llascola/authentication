@@ -56,6 +56,60 @@ func TestEndToEndPasswordSlice(t *testing.T) {
 	}
 }
 
+// TestEndToEndLostVerificationMailRecovery is Phase 06's exit criterion driven
+// over HTTP: a user whose verification mail never arrived gets themselves out,
+// with no operator involvement.
+//
+// The stranding is real, not hypothetical — Register commits the user, the
+// credential, and the token BEFORE the mail leaves, so a failed send leaves an
+// account in StatusPending that login refuses, re-registration silently ignores
+// (enumeration safety), and no reset token can rescue (wrong purpose). Resend is
+// the only door, which is why it gets an end-to-end test rather than only unit
+// coverage.
+func TestEndToEndLostVerificationMailRecovery(t *testing.T) {
+	e := newTestEnv(t)
+	const email = "e2e-resend@example.com"
+
+	// 1. Register. The token is minted and mailed...
+	if resp := e.post(t, "/auth/register", map[string]string{"email": email, "password": goodPassword}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register = %d, want 201", resp.StatusCode)
+	}
+	// 2. ...and this is the mail that never reaches the user. The test keeps the
+	//    token only to prove later that the resend invalidated it.
+	lostToken := e.lastToken(t)
+
+	// 3. The account is stuck: pending, so login refuses it.
+	if resp := e.post(t, "/auth/login", map[string]string{"email": email, "password": goodPassword}); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("login while stranded = %d, want 401", resp.StatusCode)
+	}
+
+	// 4. The user asks for another mail. 202 regardless of account state.
+	if resp := e.post(t, "/auth/verify-email/resend", map[string]string{"email": email}); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("resend = %d, want 202", resp.StatusCode)
+	}
+	freshToken := e.lastToken(t)
+	if freshToken == lostToken {
+		t.Fatal("resend re-mailed the same token; it must mint a new one")
+	}
+
+	// 5. The superseded token is dead (ADR 0009: creating one invalidates any
+	//    prior unconsumed token for the user), so only the newest mail works.
+	if resp := e.post(t, "/auth/verify-email", map[string]string{"token": lostToken}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("verify with the superseded token = %d, want 400", resp.StatusCode)
+	}
+
+	// 6. The fresh token verifies, and the account becomes usable.
+	if resp := e.post(t, "/auth/verify-email", map[string]string{"token": freshToken}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("verify with the resent token = %d, want 204", resp.StatusCode)
+	}
+	if resp := e.post(t, "/auth/login", map[string]string{"email": email, "password": goodPassword}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("login after recovery = %d, want 200", resp.StatusCode)
+	}
+	if resp := e.get(t, "/auth/me"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("/me after recovery = %d, want 200", resp.StatusCode)
+	}
+}
+
 // TestEndToEndResetFlow drives the forgot/reset legs: a logged-in user resets
 // via a mailed token, which rotates the password and kills every session.
 func TestEndToEndResetFlow(t *testing.T) {
