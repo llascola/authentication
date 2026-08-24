@@ -29,3 +29,5 @@ Format: lightweight [MADR](https://adr.github.io/madr/). Filename
 | [0017](0017-keep-initiating-session-on-password-change.md) | Keep the initiating session on an authenticated password change | Accepted |
 | [0018](0018-csrf-double-submit-bound-to-session.md) | CSRF: double-submit token bound to the session by HMAC | Accepted |
 | [0019](0019-breach-screening-hibp-k-anonymity-fail-open.md) | Breach screening via HIBP k-anonymity, failing open by default | Accepted |
+| [0020](0020-resend-verification-enumeration-safe-edge-limited.md) | Resend-verification: enumeration-safe, edge-limited, no per-user cooldown | Accepted |
+| [0021](0021-rate-limiting-shape-and-policy.md) | Rate limiting: port shape, keying, and failure policy | Accepted |

@@ -47,7 +47,23 @@ cannon pointed at your own domain.
 
 ## Current task
 
-→ **T25**. T27 can run in parallel; T28 needs both.
+→ none. T25–T32 are all `done`; the phase is complete. Next is
+[Phase 07](../phase-07-persistence/), starting at T33.
+
+Decisions this phase locked are ADRs [0017](../../adr/0017-keep-initiating-session-on-password-change.md)
+through [0021](../../adr/0021-rate-limiting-shape-and-policy.md).
+
+Two things were deliberately left open rather than silently dropped, both
+recorded where they will be found again:
+
+- The CSRF token cannot be *revoked*, only reissued — closing that means
+  re-keying the session bearer token on credential change, which is domain and
+  repository work ([ADR 0018](../../adr/0018-csrf-double-submit-bound-to-session.md),
+  pinned by `TestCSRFOldTokenStillVerifiesAfterRotation`). Phase 07 rewrites the
+  session repository anyway, so that is the natural place for it.
+- Breach screening is off by default (`AUTH_PASSWORD_SCREENER=noop`) so CI stays
+  offline, which means ADR 0011's trade is unmet until a deployment turns it on.
+  Startup logs a warning saying so.
 
 ## Explicitly not here
 

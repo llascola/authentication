@@ -102,8 +102,9 @@ contract (0012), opaque token generation + re-hash (0013), NFC normalization
 behind a port (0014), HTTP edge security posture (0015), mailer delivery via
 in-process SMTP with adapter-assembled links (0016), keeping the initiating
 session on an authenticated password change (0017, superseding that part of
-0015), CSRF double-submit bound to the session by HMAC (0018), breach screening via
-HIBP k-anonymity failing open (0019).
+0015), CSRF double-submit bound to the session by HMAC (0018), breach screening
+via HIBP k-anonymity failing open (0019), enumeration-safe resend-verification
+(0020), and rate-limiting shape/keying/failure policy (0021).
 
 ## Commits
 

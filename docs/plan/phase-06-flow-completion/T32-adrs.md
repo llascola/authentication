@@ -2,7 +2,7 @@
 id: T32
 phase: 06-flow-completion
 title: ADRs for phase 06 decisions
-status: todo
+status: done
 branch: phase-06-flow-completion
 layer: docs/adr
 depends_on: [T25, T27, T29, T30, T31]
