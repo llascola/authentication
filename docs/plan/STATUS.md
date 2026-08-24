@@ -36,7 +36,7 @@ Statuses: `todo` · `in_progress` · `blocked` · `done`
 | T25 | ResendVerification use-case | 06 | phase-06-flow-completion | T13 | done |
 | T26 | Resend-verification endpoint | 06 | phase-06-flow-completion | T25 | done |
 | T27 | RateLimiter port + in-memory adapter | 06 | phase-06-flow-completion | — | done |
-| T28 | Apply rate limits at the edge | 06 | phase-06-flow-completion | T26, T27 | todo |
+| T28 | Apply rate limits at the edge | 06 | phase-06-flow-completion | T26, T27 | done |
 | T29 | CSRF token for cookie-authenticated POSTs | 06 | phase-06-flow-completion | — | todo |
 | T30 | RevokeAllExcept — keep the current session on password change | 06 | phase-06-flow-completion | — | todo |
 | T31 | Real breach screener (HIBP k-anonymity) | 06 | phase-06-flow-completion | — | todo |

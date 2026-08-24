@@ -19,6 +19,7 @@ import (
 	httpapi "authentication/internal/adapter/http"
 	"authentication/internal/adapter/mailer"
 	"authentication/internal/adapter/memory"
+	"authentication/internal/adapter/ratelimit"
 	"authentication/internal/adapter/screener"
 	"authentication/internal/adapter/text"
 	"authentication/internal/app"
@@ -94,6 +95,12 @@ func newServer(cfg config.Config, log *slog.Logger) (*http.Server, error) {
 
 	// Use-cases (application), each given only the ports it needs.
 	deps := httpapi.Deps{
+		Limits: httpapi.Limits{
+			Login:    ratelimit.NewMemory(cfg.LoginRate.Limit, cfg.LoginRate.Window, clk),
+			Register: ratelimit.NewMemory(cfg.RegisterRate.Limit, cfg.RegisterRate.Window, clk),
+			Forgot:   ratelimit.NewMemory(cfg.ForgotRate.Limit, cfg.ForgotRate.Window, clk),
+			Resend:   ratelimit.NewMemory(cfg.ResendRate.Limit, cfg.ResendRate.Window, clk),
+		},
 		Register: app.NewRegisterService(
 			store.Users(), store.Credentials(), store.Tokens(), mail, tokens, clk, normalizer, policy, screen, hasher),
 		VerifyEmail:        app.NewVerifyEmailService(store.Users(), store.Tokens(), tokens, clk),

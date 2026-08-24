@@ -17,21 +17,37 @@ import (
 	httpapi "authentication/internal/adapter/http"
 	"authentication/internal/adapter/mailer"
 	"authentication/internal/adapter/memory"
+	"authentication/internal/adapter/ratelimit"
 	"authentication/internal/adapter/screener"
 	"authentication/internal/adapter/text"
 	"authentication/internal/app"
 	"authentication/internal/domain"
+	"authentication/internal/port"
 )
 
 var tokenRe = regexp.MustCompile(`token=([^\s]+)`)
 
 type testEnv struct {
 	srv     *httptest.Server
+	handler http.Handler // the same router, for tests that forge RemoteAddr
 	client  *http.Client
 	mailLog *bytes.Buffer
 }
 
+// generousLimits are rate limits no functional test can reach, so a throttle
+// never masquerades as a behavioural failure. The limits themselves are proven
+// in middleware_test.go, which builds deliberately tiny ones.
+func generousLimits() httpapi.Limits {
+	l := func() port.RateLimiter { return ratelimit.NewMemory(100_000, time.Minute, systemClock{}) }
+	return httpapi.Limits{Login: l(), Register: l(), Forgot: l(), Resend: l()}
+}
+
 func newTestEnv(t *testing.T) *testEnv {
+	t.Helper()
+	return newTestEnvWithLimits(t, generousLimits())
+}
+
+func newTestEnvWithLimits(t *testing.T, limits httpapi.Limits) *testEnv {
 	t.Helper()
 	store := memory.NewStore()
 	bc := crypto.NewBcrypt(4)
@@ -45,6 +61,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	ml := mailer.NewLogMailer(slog.New(slog.NewTextHandler(&buf, nil)))
 
 	deps := httpapi.Deps{
+		Limits:             limits,
 		Register:           app.NewRegisterService(store.Users(), store.Credentials(), store.Tokens(), ml, tg, clk, nz, policy, sc, bc),
 		VerifyEmail:        app.NewVerifyEmailService(store.Users(), store.Tokens(), tg, clk),
 		ResendVerification: app.NewResendVerificationService(store.Users(), store.Tokens(), ml, tg, clk),
@@ -58,11 +75,12 @@ func newTestEnv(t *testing.T) *testEnv {
 	// CookieSecure must be false so the test client sends the cookie over httptest's http.
 	opts := httpapi.Options{CookieSecure: false, SessionTTL: 24 * time.Hour}
 
-	srv := httptest.NewServer(httpapi.NewRouter(deps, opts))
+	handler := httpapi.NewRouter(deps, opts)
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
 	jar, _ := cookiejar.New(nil)
-	return &testEnv{srv: srv, client: &http.Client{Jar: jar}, mailLog: &buf}
+	return &testEnv{srv: srv, handler: handler, client: &http.Client{Jar: jar}, mailLog: &buf}
 }
 
 // systemClock is the real clock; HTTP tests don't manipulate time.

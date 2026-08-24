@@ -17,6 +17,14 @@ const (
 	maxBcryptCost = 31
 )
 
+// RateLimitPolicy is one route's throttle: Limit actions per Window, per key.
+// The edge decides what a key is (client IP, submitted email); this only
+// carries the numbers.
+type RateLimitPolicy struct {
+	Limit  int
+	Window time.Duration
+}
+
 // Config is the resolved server configuration.
 type Config struct {
 	ListenAddr   string
@@ -24,6 +32,14 @@ type Config struct {
 	AbsTTL       time.Duration
 	BcryptCost   int
 	CookieSecure bool
+
+	// Rate limits, one policy per protected route. Defaults are chosen so a
+	// real person never meets them: someone mistyping a password a few times,
+	// or asking for a second verification mail, must not be locked out.
+	LoginRate    RateLimitPolicy
+	RegisterRate RateLimitPolicy
+	ForgotRate   RateLimitPolicy
+	ResendRate   RateLimitPolicy
 
 	// Mailer. When SMTPAddr is empty the process wires the dev-only LogMailer;
 	// when set, all other mailer fields are required and an SmtpMailer is used.
@@ -47,6 +63,25 @@ const (
 	defaultBcryptCost = 10 // bcrypt.DefaultCost
 )
 
+// Default rate limits. Each applies per key, and every protected route is keyed
+// by client IP; login, forgot, and resend are additionally keyed by the
+// submitted email.
+//
+// Login is per-minute because a human retries a mistyped password within
+// seconds and gives up quickly, while a spray needs sustained volume. The
+// mail-sending routes are per-hour because their cost is not CPU but an actual
+// email: five is generous for a person, and a hard ceiling on how much mail one
+// address can be made to receive.
+//
+// These are per-process (the in-memory limiter). N replicas mean N times these
+// numbers until a shared backend replaces it.
+var (
+	defaultLoginRate    = RateLimitPolicy{Limit: 10, Window: time.Minute}
+	defaultRegisterRate = RateLimitPolicy{Limit: 10, Window: time.Hour}
+	defaultForgotRate   = RateLimitPolicy{Limit: 5, Window: time.Hour}
+	defaultResendRate   = RateLimitPolicy{Limit: 5, Window: time.Hour}
+)
+
 // Load reads configuration from the environment, applying defaults for unset
 // values and rejecting malformed or out-of-range ones.
 func Load() (Config, error) {
@@ -56,6 +91,10 @@ func Load() (Config, error) {
 		AbsTTL:       defaultAbsTTL,
 		BcryptCost:   defaultBcryptCost,
 		CookieSecure: true,
+		LoginRate:    defaultLoginRate,
+		RegisterRate: defaultRegisterRate,
+		ForgotRate:   defaultForgotRate,
+		ResendRate:   defaultResendRate,
 	}
 
 	if v := os.Getenv("AUTH_LISTEN_ADDR"); v != "" {
@@ -74,6 +113,20 @@ func Load() (Config, error) {
 	}
 	if cfg.CookieSecure, err = boolEnv("AUTH_COOKIE_SECURE", cfg.CookieSecure); err != nil {
 		return Config{}, err
+	}
+
+	for _, p := range []struct {
+		prefix string
+		dst    *RateLimitPolicy
+	}{
+		{"AUTH_RATELIMIT_LOGIN", &cfg.LoginRate},
+		{"AUTH_RATELIMIT_REGISTER", &cfg.RegisterRate},
+		{"AUTH_RATELIMIT_FORGOT", &cfg.ForgotRate},
+		{"AUTH_RATELIMIT_RESEND", &cfg.ResendRate},
+	} {
+		if *p.dst, err = rateLimitEnv(p.prefix, *p.dst); err != nil {
+			return Config{}, err
+		}
 	}
 
 	cfg.SMTPAddr = os.Getenv("AUTH_SMTP_ADDR")
@@ -110,6 +163,31 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// rateLimitEnv reads <prefix>_LIMIT and <prefix>_WINDOW, falling back to def.
+//
+// A non-positive limit or window is rejected rather than clamped: unlike a
+// missing variable, an explicitly configured "0" is someone stating an
+// intention, and for a throttle the plausible intentions ("unlimited" or "block
+// everything") are both things they should have to spell out some other way.
+// Failing at startup beats silently running with no protection.
+func rateLimitEnv(prefix string, def RateLimitPolicy) (RateLimitPolicy, error) {
+	limit, err := intEnv(prefix+"_LIMIT", def.Limit)
+	if err != nil {
+		return RateLimitPolicy{}, err
+	}
+	window, err := durationEnv(prefix+"_WINDOW", def.Window)
+	if err != nil {
+		return RateLimitPolicy{}, err
+	}
+	if limit < 1 {
+		return RateLimitPolicy{}, fmt.Errorf("config: %s_LIMIT must be >= 1, got %d", prefix, limit)
+	}
+	if window <= 0 {
+		return RateLimitPolicy{}, fmt.Errorf("config: %s_WINDOW must be positive, got %s", prefix, window)
+	}
+	return RateLimitPolicy{Limit: limit, Window: window}, nil
 }
 
 func durationEnv(key string, def time.Duration) (time.Duration, error) {

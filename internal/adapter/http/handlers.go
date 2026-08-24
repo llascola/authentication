@@ -8,6 +8,7 @@ import (
 
 	"authentication/internal/app"
 	"authentication/internal/domain"
+	"authentication/internal/port"
 )
 
 const (
@@ -15,8 +16,26 @@ const (
 	maxBodyBytes = 64 << 10 // 64 KiB: auth payloads are tiny
 )
 
-// Deps are the use-case services the HTTP edge drives.
+// Limits are the rate limiters guarding the routes an attacker can turn into
+// something expensive. One limiter per route rather than one shared instance:
+// a login attempt must not spend the budget a password-reset mail needs.
+//
+// Every field is required. NewRouter panics on a missing one — a route that
+// silently ships unthrottled is the failure mode this whole task exists to
+// prevent, and a nil check at wiring time is cheaper than discovering it from
+// an SMTP bill.
+type Limits struct {
+	Login    port.RateLimiter
+	Register port.RateLimiter
+	Forgot   port.RateLimiter
+	Resend   port.RateLimiter
+}
+
+// Deps are the driven dependencies the HTTP edge holds: the use-case services
+// it calls, and the edge-level ports (rate limiters) it enforces itself.
 type Deps struct {
+	Limits Limits
+
 	Register           *app.RegisterService
 	VerifyEmail        *app.VerifyEmailService
 	ResendVerification *app.ResendVerificationService
