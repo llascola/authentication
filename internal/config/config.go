@@ -17,6 +17,12 @@ const (
 	maxBcryptCost = 31
 )
 
+// minCSRFKeyBytes is the floor for AUTH_CSRF_KEY. The token is an HMAC-SHA256,
+// whose security rests entirely on this key being unguessable; 32 bytes matches
+// the hash's block-relevant size and rules out a short passphrase being pasted
+// in by mistake.
+const minCSRFKeyBytes = 32
+
 // RateLimitPolicy is one route's throttle: Limit actions per Window, per key.
 // The edge decides what a key is (client IP, submitted email); this only
 // carries the numbers.
@@ -32,6 +38,12 @@ type Config struct {
 	AbsTTL       time.Duration
 	BcryptCost   int
 	CookieSecure bool
+
+	// CSRFKey is the server secret the CSRF token is HMAC'd with. Empty means
+	// unset: the composition root generates an ephemeral one and warns, which is
+	// fine while sessions are in-memory (a restart drops both) and must not
+	// survive into Phase 07, where sessions outlive the process.
+	CSRFKey []byte
 
 	// Rate limits, one policy per protected route. Defaults are chosen so a
 	// real person never meets them: someone mistyping a password a few times,
@@ -127,6 +139,13 @@ func Load() (Config, error) {
 		if *p.dst, err = rateLimitEnv(p.prefix, *p.dst); err != nil {
 			return Config{}, err
 		}
+	}
+
+	if v := os.Getenv("AUTH_CSRF_KEY"); v != "" {
+		if len(v) < minCSRFKeyBytes {
+			return Config{}, fmt.Errorf("config: AUTH_CSRF_KEY must be at least %d bytes, got %d", minCSRFKeyBytes, len(v))
+		}
+		cfg.CSRFKey = []byte(v)
 	}
 
 	cfg.SMTPAddr = os.Getenv("AUTH_SMTP_ADDR")

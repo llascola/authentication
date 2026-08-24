@@ -6,7 +6,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -112,13 +114,44 @@ func newServer(cfg config.Config, log *slog.Logger) (*http.Server, error) {
 		ForgotPassword:     app.NewForgotPasswordService(store.Users(), store.Tokens(), mail, tokens, clk),
 		ResetPassword:      app.NewResetPasswordService(store.Credentials(), store.Sessions(), store.Tokens(), tokens, normalizer, policy, screen, hasher, clk),
 	}
-	opts := httpapi.Options{CookieSecure: cfg.CookieSecure, SessionTTL: cfg.AbsTTL}
+	csrfKey, err := csrfKey(cfg, log)
+	if err != nil {
+		return nil, err
+	}
+	opts := httpapi.Options{
+		CookieSecure: cfg.CookieSecure,
+		SessionTTL:   cfg.AbsTTL,
+		CSRFKey:      csrfKey,
+	}
 
 	return &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           httpapi.NewRouter(deps, opts),
 		ReadHeaderTimeout: 10 * time.Second,
 	}, nil
+}
+
+// csrfKey resolves the secret CSRF tokens are signed with.
+//
+// An unset AUTH_CSRF_KEY yields a random per-process key rather than an error,
+// which is only defensible while sessions live in memory: a restart drops every
+// session and every token together, so nothing is left holding a token this
+// process can no longer verify. Phase 07 makes sessions outlive the process, at
+// which point an ephemeral key would log everyone out on every deploy and
+// break horizontal scaling outright — hence the warning naming that, rather
+// than a silent default.
+func csrfKey(cfg config.Config, log *slog.Logger) ([]byte, error) {
+	if len(cfg.CSRFKey) > 0 {
+		return cfg.CSRFKey, nil
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("generate ephemeral CSRF key: %w", err)
+	}
+	log.Warn("AUTH_CSRF_KEY is unset; generated an ephemeral key",
+		"impact", "CSRF tokens do not survive a restart and are not shared across replicas",
+		"action", "set AUTH_CSRF_KEY before persisting sessions or running more than one instance")
+	return key, nil
 }
 
 // buildMailer selects the mailer implementation from config: the production

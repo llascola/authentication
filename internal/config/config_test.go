@@ -191,3 +191,38 @@ func TestLoadRateLimitRejectsDisabling(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadCSRFKey(t *testing.T) {
+	t.Run("unset leaves it empty for the composition root", func(t *testing.T) {
+		t.Setenv("AUTH_CSRF_KEY", "")
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if len(cfg.CSRFKey) != 0 {
+			t.Errorf("CSRFKey = %q, want empty when unset", cfg.CSRFKey)
+		}
+	})
+
+	t.Run("a long enough key is taken verbatim", func(t *testing.T) {
+		const key = "0123456789abcdef0123456789abcdef" // exactly 32
+		t.Setenv("AUTH_CSRF_KEY", key)
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if string(cfg.CSRFKey) != key {
+			t.Errorf("CSRFKey = %q, want %q", cfg.CSRFKey, key)
+		}
+	})
+
+	// A short key is rejected rather than stretched: the whole scheme rests on
+	// this value being unguessable, and silently accepting a passphrase would
+	// hide that.
+	t.Run("a short key is rejected", func(t *testing.T) {
+		t.Setenv("AUTH_CSRF_KEY", "too-short")
+		if _, err := config.Load(); err == nil {
+			t.Error("Load with a short AUTH_CSRF_KEY returned nil error")
+		}
+	})
+}

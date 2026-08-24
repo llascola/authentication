@@ -51,6 +51,11 @@ type Deps struct {
 type Options struct {
 	CookieSecure bool          // Secure attribute on the session cookie
 	SessionTTL   time.Duration // cookie Max-Age (the absolute session lifetime)
+
+	// CSRFKey is the server secret CSRF tokens are HMAC'd with. Required:
+	// NewRouter panics on an empty one, because an empty key makes every token
+	// forgeable by anyone who reads this source.
+	CSRFKey []byte
 }
 
 type server struct {
@@ -89,6 +94,43 @@ func (s *server) setSessionCookie(w http.ResponseWriter, raw string) {
 		Secure:   s.opts.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(s.opts.SessionTTL.Seconds()),
+	})
+}
+
+// setCSRFCookie mints a CSRF token bound to the given raw session token and
+// installs it. Deliberately NOT HttpOnly: the frontend must read it to echo it
+// in the X-CSRF-Token header, and that header is the part a cross-site form
+// post cannot produce. The cookie grants nothing on its own.
+//
+// Calling this again for a live session hands the client a new token (the nonce
+// changes). It does NOT invalidate the previous one — verification is stateless.
+// See the limitation note in middleware.go and ADR 0018.
+func (s *server) setCSRFCookie(w http.ResponseWriter, sessionRaw string) error {
+	token, err := issueCSRFToken(s.opts.CSRFKey, sessionRaw)
+	if err != nil {
+		return err
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   s.opts.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(s.opts.SessionTTL.Seconds()),
+	})
+	return nil
+}
+
+func (s *server) clearCSRFCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   s.opts.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
 	})
 }
 
@@ -188,6 +230,11 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setSessionCookie(w, raw)
+	// A fresh session gets a fresh CSRF token bound to it.
+	if err := s.setCSRFCookie(w, raw); err != nil {
+		writeError(w, r, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -198,6 +245,7 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 		_ = s.deps.Logout.Logout(r.Context(), c.Value)
 	}
 	s.clearSessionCookie(w)
+	s.clearCSRFCookie(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -236,6 +284,15 @@ func (s *server) changePassword(w http.ResponseWriter, r *http.Request) {
 	if err := s.deps.ChangePassword.ChangePassword(r.Context(), id, in.OldPassword, in.NewPassword); err != nil {
 		writeError(w, r, err)
 		return
+	}
+	// The session survives the change (ADR 0017), so its CSRF token has to be
+	// rotated rather than carried over: a token minted under the old credential
+	// must not outlive it. This is the obligation ADR 0017 recorded.
+	if c, err := r.Cookie(cookieName); err == nil {
+		if err := s.setCSRFCookie(w, c.Value); err != nil {
+			writeError(w, r, err)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

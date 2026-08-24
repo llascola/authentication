@@ -7,6 +7,11 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -14,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"authentication/internal/app"
@@ -188,4 +194,115 @@ func emailKey(r *http.Request) (string, bool) {
 		return "", false
 	}
 	return "email:" + email.String(), true
+}
+
+// --- CSRF ------------------------------------------------------------------
+
+// The CSRF scheme is double-submit with the token bound to the session by an
+// HMAC (ADR 0018).
+//
+// A plain double-submit token proves only that whoever sent the request could
+// also set a cookie on this domain. Any subdomain can do that, so an unbound
+// token is defeated by exactly the same-site attacker SameSite=Lax already
+// fails against — which would leave the mitigation and the defence sharing one
+// weakness. Binding the token to the session token with a server-held key
+// closes that: forging a token for someone else's session needs the key.
+//
+// Token layout: base64url(nonce) "." base64url(HMAC-SHA256(key, nonce|session)).
+// The nonce lets the server hand out a fresh token for a session that is staying
+// put — needed because ADR 0017 keeps the session alive across a password
+// change, so a token derived from the session alone could never change without
+// logging the user out.
+//
+// KNOWN LIMITATION: verification is stateless, so issuing a new token does not
+// invalidate an old one. Every token ever minted for a live session keeps
+// verifying until that session ends. Revoking one would need per-session state
+// or a re-keyed session bearer token — see ADR 0018 and the test named
+// TestCSRFOldTokenStillVerifiesAfterRotation, which pins the current behaviour.
+//
+// The CSRF cookie is deliberately readable by JavaScript: the frontend has to
+// echo it in a header, and a header is the part a cross-site form post cannot
+// forge. It carries no authority alone — the session cookie stays HttpOnly.
+const (
+	csrfCookieName = "csrf_token"
+	csrfHeaderName = "X-CSRF-Token"
+	csrfNonceBytes = 16
+)
+
+// issueCSRFToken mints a fresh token bound to the given raw session token. A new
+// call yields a new nonce, so this doubles as the rotation primitive.
+func issueCSRFToken(key []byte, sessionRaw string) (string, error) {
+	nonce := make([]byte, csrfNonceBytes)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(nonce) + "." +
+		base64.RawURLEncoding.EncodeToString(csrfMAC(key, nonce, sessionRaw)), nil
+}
+
+func csrfMAC(key, nonce []byte, sessionRaw string) []byte {
+	m := hmac.New(sha256.New, key)
+	m.Write(nonce)
+	m.Write([]byte{'|'}) // separator: nonce is fixed-length, but be explicit
+	m.Write([]byte(sessionRaw))
+	return m.Sum(nil)
+}
+
+// validCSRFToken reports whether presented is a token this server minted for
+// this session. hmac.Equal is constant-time.
+func validCSRFToken(key []byte, presented, sessionRaw string) bool {
+	noncePart, macPart, ok := strings.Cut(presented, ".")
+	if !ok {
+		return false
+	}
+	nonce, err := base64.RawURLEncoding.DecodeString(noncePart)
+	if err != nil || len(nonce) != csrfNonceBytes {
+		return false
+	}
+	mac, err := base64.RawURLEncoding.DecodeString(macPart)
+	if err != nil {
+		return false
+	}
+	return hmac.Equal(mac, csrfMAC(key, nonce, sessionRaw))
+}
+
+// requireCSRF rejects a cookie-authenticated state-changing request that does
+// not carry a matching, session-bound CSRF token.
+//
+// A request with no session cookie passes straight through: there is no ambient
+// authority to abuse, and the handler behind it decides what to do (401 for a
+// protected route, a no-op 204 for logout). Requiring a token there would break
+// logout's idempotence without protecting anything.
+//
+// It runs OUTSIDE requireAuth so a forged request is refused before the session
+// lookup, and — more to the point — before ValidateSession slides that session's
+// idle window. An attacker should not be able to keep a victim's session alive
+// with forged requests.
+func (s *server) requireCSRF(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session, err := r.Cookie(cookieName)
+		if err != nil {
+			next(w, r)
+			return
+		}
+		header := r.Header.Get(csrfHeaderName)
+		cookie, err := r.Cookie(csrfCookieName)
+		if err != nil || header == "" {
+			writeError(w, r, errCSRF)
+			return
+		}
+		// Double-submit: the header must equal the cookie. A cross-site caller
+		// can make the browser send the cookie but cannot read it to echo it.
+		if subtle.ConstantTimeCompare([]byte(header), []byte(cookie.Value)) != 1 {
+			writeError(w, r, errCSRF)
+			return
+		}
+		// Binding: and the token must be one WE minted for THIS session, which
+		// is what a same-site attacker who can set cookies cannot fake.
+		if !validCSRFToken(s.opts.CSRFKey, header, session.Value) {
+			writeError(w, r, errCSRF)
+			return
+		}
+		next(w, r)
+	}
 }

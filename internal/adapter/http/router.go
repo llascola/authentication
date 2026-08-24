@@ -28,9 +28,20 @@ import (
 // IP is checked before email: it needs no body read, so the cheap check runs
 // first and a denial there costs nothing.
 //
-// It panics if any limiter is missing — see Limits.
+// The two cookie-authenticated state-changing POSTs — password change and
+// logout — additionally sit behind requireCSRF, outside requireAuth so a forged
+// request never reaches the session lookup (T29, ADR 0018). Logout is covered
+// because forcing someone out is trivially preventable here, not because it is
+// a breach. The public routes need no token: no session exists yet, so there is
+// no ambient authority for a cross-site request to borrow.
+//
+// It panics if any limiter, or the CSRF key, is missing — see Limits and
+// Options.CSRFKey.
 func NewRouter(deps Deps, opts Options) http.Handler {
 	requireLimiters(deps.Limits)
+	if len(opts.CSRFKey) == 0 {
+		panic("httpapi: Options.CSRFKey is required")
+	}
 	s := &server{deps: deps, opts: opts}
 
 	perIP := func(l port.RateLimiter) middleware { return rateLimit(l, ipKey) }
@@ -44,9 +55,9 @@ func NewRouter(deps Deps, opts Options) http.Handler {
 		perIP(deps.Limits.Resend), perEmail(deps.Limits.Resend)))
 	mux.HandleFunc("POST /auth/login", chain(s.login,
 		perIP(deps.Limits.Login), perEmail(deps.Limits.Login)))
-	mux.HandleFunc("POST /auth/logout", s.logout)
+	mux.HandleFunc("POST /auth/logout", s.requireCSRF(s.logout))
 	mux.HandleFunc("GET /auth/me", s.requireAuth(s.me))
-	mux.HandleFunc("POST /auth/password/change", s.requireAuth(s.changePassword))
+	mux.HandleFunc("POST /auth/password/change", s.requireCSRF(s.requireAuth(s.changePassword)))
 	mux.HandleFunc("POST /auth/password/forgot", chain(s.forgotPassword,
 		perIP(deps.Limits.Forgot), perEmail(deps.Limits.Forgot)))
 	mux.HandleFunc("POST /auth/password/reset", s.resetPassword)

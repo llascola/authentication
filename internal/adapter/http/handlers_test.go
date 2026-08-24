@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -73,7 +74,7 @@ func newTestEnvWithLimits(t *testing.T, limits httpapi.Limits) *testEnv {
 		ResetPassword:      app.NewResetPasswordService(store.Credentials(), store.Sessions(), store.Tokens(), tg, nz, policy, sc, bc, clk),
 	}
 	// CookieSecure must be false so the test client sends the cookie over httptest's http.
-	opts := httpapi.Options{CookieSecure: false, SessionTTL: 24 * time.Hour}
+	opts := httpapi.Options{CookieSecure: false, SessionTTL: 24 * time.Hour, CSRFKey: testCSRFKey}
 
 	handler := httpapi.NewRouter(deps, opts)
 	srv := httptest.NewServer(handler)
@@ -88,14 +89,45 @@ type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now().UTC() }
 
+// testCSRFKey is a fixed server key; the tokens it signs are still random per
+// session because the nonce is.
+var testCSRFKey = []byte("test-csrf-key-at-least-32-bytes-long")
+
+// post behaves like a browser frontend: it lets the jar carry the cookies and
+// echoes the CSRF cookie in the X-CSRF-Token header, which is exactly what a
+// cross-site attacker cannot do. Tests that need a request WITHOUT a valid
+// token build it by hand (see middleware_test.go).
 func (e *testEnv) post(t *testing.T, path string, body any) *http.Response {
 	t.Helper()
 	b, _ := json.Marshal(body)
-	resp, err := e.client.Post(e.srv.URL+path, "application/json", bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, e.srv.URL+path, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("build POST %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if tok := e.csrfToken(); tok != "" {
+		req.Header.Set("X-CSRF-Token", tok)
+	}
+	resp, err := e.client.Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
 	}
 	return resp
+}
+
+// csrfToken reads the CSRF cookie the way a frontend would — it is not
+// HttpOnly, so JS (and the jar) can see it. Empty before any login.
+func (e *testEnv) csrfToken() string {
+	u, err := url.Parse(e.srv.URL)
+	if err != nil {
+		return ""
+	}
+	for _, c := range e.client.Jar.Cookies(u) {
+		if c.Name == "csrf_token" {
+			return c.Value
+		}
+	}
+	return ""
 }
 
 func (e *testEnv) get(t *testing.T, path string) *http.Response {

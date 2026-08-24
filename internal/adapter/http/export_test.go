@@ -14,3 +14,10 @@ var (
 	_ func(*http.Request) (string, bool) = IPKeyForTest
 	_ func(*http.Request) (string, bool) = EmailKeyForTest
 )
+
+// CSRF token minting and verification are pure functions worth exercising
+// directly, not only through a route. Test-only.
+var (
+	IssueCSRFTokenForTest = issueCSRFToken
+	ValidCSRFTokenForTest = validCSRFToken
+)
