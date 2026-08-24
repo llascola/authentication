@@ -522,17 +522,59 @@ func TestLogoutWithoutSessionStaysIdempotent(t *testing.T) {
 	}
 }
 
-func TestLogoutWithSessionRequiresCSRF(t *testing.T) {
+// TestLogoutWithABadTokenIsRefused: a token that is present but wrong is a
+// forgery attempt, and logout refuses it like any other guarded route. Such a
+// caller is not stuck — it demonstrably holds the cookie it failed to echo.
+func TestLogoutWithABadTokenIsRefused(t *testing.T) {
 	e := newTestEnv(t)
 	e.registerVerifyLogin(t, "csrf-logout@example.com")
+	session, token := e.cookieValue("session"), e.cookieValue("csrf_token")
+
+	cases := map[string]struct{ cookie, header string }{
+		"cookie without header":        {token, ""},
+		"header does not match cookie": {token, "some-other-value"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if resp := e.rawPost(t, "/auth/logout", session, c.cookie, c.header, nil); resp.StatusCode != http.StatusForbidden {
+				t.Errorf("logout with %s = %d, want 403", name, resp.StatusCode)
+			}
+		})
+	}
+	// The session survived every refused logout.
+	if resp := e.get(t, "/auth/me"); resp.StatusCode != http.StatusOK {
+		t.Errorf("/me after refused logouts = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestLogoutWithoutTheCSRFCookieStillWorks pins the escape hatch. The CSRF
+// cookie is not HttpOnly, so a client can lose it on its own while keeping the
+// session cookie. Under a strict guard that client would be stuck: logout is the
+// only route that could end the session, and it would refuse. See
+// requireCSRFUnlessTokenLost and ADR 0018.
+func TestLogoutWithoutTheCSRFCookieStillWorks(t *testing.T) {
+	e := newTestEnv(t)
+	e.registerVerifyLogin(t, "csrf-lost@example.com")
 	session := e.cookieValue("session")
 
-	if resp := e.rawPost(t, "/auth/logout", session, "", "", nil); resp.StatusCode != http.StatusForbidden {
-		t.Errorf("logout without a token = %d, want 403", resp.StatusCode)
+	if resp := e.rawPost(t, "/auth/logout", session, "", "", nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("logout with a lost CSRF cookie = %d, want 204", resp.StatusCode)
 	}
-	// The session survived the refused logout.
-	if resp := e.get(t, "/auth/me"); resp.StatusCode != http.StatusOK {
-		t.Errorf("/me after a refused logout = %d, want 200", resp.StatusCode)
+	// And it was a real logout, not a no-op: the session is revoked server-side.
+	if resp := e.get(t, "/auth/me"); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("/me after the escape-hatch logout = %d, want 401", resp.StatusCode)
+	}
+}
+
+// TestPasswordChangeWithoutTheCSRFCookieIsRefused: the hatch is logout's alone.
+// A lost token must not become a way to reach a route that changes a credential.
+func TestPasswordChangeWithoutTheCSRFCookieIsRefused(t *testing.T) {
+	e := newTestEnv(t)
+	e.registerVerifyLogin(t, "csrf-strict@example.com")
+	session := e.cookieValue("session")
+
+	if resp := e.rawPost(t, "/auth/password/change", session, "", "", changeBody()); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("change with a lost CSRF cookie = %d, want 403", resp.StatusCode)
 	}
 }
 

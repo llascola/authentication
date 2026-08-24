@@ -45,6 +45,15 @@ edge with no stored state.
   authority to abuse, and requiring a token would break logout's idempotence.
   Public routes (login, register, forgot, reset, verify, resend) are not covered
   for the same reason — no session exists yet.
+- **Logout gets a relaxed guard**: a request whose CSRF *cookie* is absent
+  entirely passes through instead of being refused (`requireCSRFUnlessTokenLost`).
+  Under the strict guard, a client holding a session cookie but no CSRF cookie is
+  stuck — every state-changing route refuses it, including the only route that
+  could end the session. Since the CSRF cookie is deliberately not `HttpOnly`, it
+  is precisely the one an extension, a partial cookie clear, or a privacy tool
+  can drop on its own. The hatch is for a *missing* cookie only: a cookie that is
+  present but mismatched or wrongly bound is still a `403`, because that is a
+  forgery attempt and not a lost token.
 - The check sits **outside** `requireAuth`, so a forged request is refused before
   the session lookup and, importantly, before `ValidateSession` slides that
   session's idle window. An attacker must not be able to keep a victim's session
@@ -79,6 +88,17 @@ edge with no stored state.
     work, so it is deliberately not in this ADR.
   - `TestCSRFOldTokenStillVerifiesAfterRotation` pins the current behaviour so
     the limitation cannot be forgotten or silently changed.
+- **What logout's hatch gives up:** a same-site attacker who can delete the CSRF
+  cookie on the parent domain can then force a logout. That is the outcome this
+  ADR already judged worth little — logout is covered because forcing someone out
+  is trivially preventable, not because it is a breach — and a self-inflicted
+  lockout with no exit is the more likely event by far. A *cross-site* attacker
+  gains nothing: with `SameSite=Lax` a cross-site POST carries no session cookie
+  either, so it takes the no-session path and logout no-ops as it always did.
+  Password change keeps the strict guard; the hatch must never become a way to
+  reach a route that changes a credential.
+  (`TestLogoutWithoutTheCSRFCookieStillWorks` and
+  `TestPasswordChangeWithoutTheCSRFCookieIsRefused` pin both halves.)
 - An ephemeral key is acceptable only while sessions are in memory: a restart
   drops sessions and tokens together. Phase 07 makes sessions outlive the
   process, at which point an unset `AUTH_CSRF_KEY` would log everyone out on

@@ -268,6 +268,37 @@ func validCSRFToken(key []byte, presented, sessionRaw string) bool {
 
 // requireCSRF rejects a cookie-authenticated state-changing request that does
 // not carry a matching, session-bound CSRF token.
+func (s *server) requireCSRF(next http.HandlerFunc) http.HandlerFunc {
+	return s.csrfGuard(next, false)
+}
+
+// requireCSRFUnlessTokenLost is requireCSRF with one escape hatch: a request
+// whose CSRF COOKIE is absent entirely passes through instead of being refused.
+//
+// It exists for logout, and only for logout. Under the strict guard a client
+// holding a session cookie but no CSRF cookie is stuck: every state-changing
+// route refuses it, including the one route that would clear the session. Since
+// the CSRF cookie is deliberately not HttpOnly, it is the one an extension, a
+// partial cookie clear, or a privacy tool can plausibly drop on its own, leaving
+// a live session with no way out until it expires.
+//
+// What this gives up: a same-site attacker who can delete the CSRF cookie on the
+// parent domain can then force a logout. That is the outcome ADR 0018 already
+// judged worth little — "forcing someone out is trivially preventable here, not
+// because it is a breach" — and a self-inflicted lockout is the more likely
+// event. A cross-site attacker gains nothing: SameSite=Lax means a cross-site
+// POST carries no session cookie either, so it takes the no-session path below
+// and logout no-ops as it always did.
+//
+// The hatch is only for a MISSING cookie. A cookie that is present but does not
+// match, or is not bound to this session, is still a 403 — that is a forgery
+// attempt, not a lost token, and such a client can recover by echoing the cookie
+// it demonstrably has.
+func (s *server) requireCSRFUnlessTokenLost(next http.HandlerFunc) http.HandlerFunc {
+	return s.csrfGuard(next, true)
+}
+
+// csrfGuard is the one implementation behind both wrappers.
 //
 // A request with no session cookie passes straight through: there is no ambient
 // authority to abuse, and the handler behind it decides what to do (401 for a
@@ -278,16 +309,24 @@ func validCSRFToken(key []byte, presented, sessionRaw string) bool {
 // lookup, and — more to the point — before ValidateSession slides that session's
 // idle window. An attacker should not be able to keep a victim's session alive
 // with forged requests.
-func (s *server) requireCSRF(next http.HandlerFunc) http.HandlerFunc {
+func (s *server) csrfGuard(next http.HandlerFunc, allowMissingCookie bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		session, err := r.Cookie(cookieName)
 		if err != nil {
 			next(w, r)
 			return
 		}
-		header := r.Header.Get(csrfHeaderName)
 		cookie, err := r.Cookie(csrfCookieName)
-		if err != nil || header == "" {
+		if err != nil {
+			if allowMissingCookie {
+				next(w, r)
+				return
+			}
+			writeError(w, r, errCSRF)
+			return
+		}
+		header := r.Header.Get(csrfHeaderName)
+		if header == "" {
 			writeError(w, r, errCSRF)
 			return
 		}

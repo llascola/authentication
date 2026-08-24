@@ -29,11 +29,13 @@ import (
 // first and a denial there costs nothing.
 //
 // The two cookie-authenticated state-changing POSTs — password change and
-// logout — additionally sit behind requireCSRF, outside requireAuth so a forged
+// logout — additionally sit behind a CSRF guard, outside requireAuth so a forged
 // request never reaches the session lookup (T29, ADR 0018). Logout is covered
 // because forcing someone out is trivially preventable here, not because it is
-// a breach. The public routes need no token: no session exists yet, so there is
-// no ambient authority for a cross-site request to borrow.
+// a breach — which is also why logout gets the relaxed guard: a client that has
+// lost its CSRF cookie must still be able to end its session, since logout is
+// the only route that could. The public routes need no token: no session exists
+// yet, so there is no ambient authority for a cross-site request to borrow.
 //
 // It panics if any limiter, or the CSRF key, is missing — see Limits and
 // Options.CSRFKey.
@@ -55,7 +57,7 @@ func NewRouter(deps Deps, opts Options) http.Handler {
 		perIP(deps.Limits.Resend), perEmail(deps.Limits.Resend)))
 	mux.HandleFunc("POST /auth/login", chain(s.login,
 		perIP(deps.Limits.Login), perEmail(deps.Limits.Login)))
-	mux.HandleFunc("POST /auth/logout", s.requireCSRF(s.logout))
+	mux.HandleFunc("POST /auth/logout", s.requireCSRFUnlessTokenLost(s.logout))
 	mux.HandleFunc("GET /auth/me", s.requireAuth(s.me))
 	mux.HandleFunc("POST /auth/password/change", s.requireCSRF(s.requireAuth(s.changePassword)))
 	mux.HandleFunc("POST /auth/password/forgot", chain(s.forgotPassword,
