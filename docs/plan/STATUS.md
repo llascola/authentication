@@ -33,7 +33,7 @@ Statuses: `todo` · `in_progress` · `blocked` · `done`
 | T22 | main wiring + shutdown | 04 | phase-04-edge-wiring | T20, T21 | done |
 | T23 | Integration test | 05 | phase-05-verify | T22 | done |
 | T24 | ADRs for new port shapes | 05 | phase-05-verify | T01, T02, T03 | done |
-| T25 | ResendVerification use-case | 06 | phase-06-flow-completion | T13 | todo |
+| T25 | ResendVerification use-case | 06 | phase-06-flow-completion | T13 | done |
 | T26 | Resend-verification endpoint | 06 | phase-06-flow-completion | T25 | todo |
 | T27 | RateLimiter port + in-memory adapter | 06 | phase-06-flow-completion | — | todo |
 | T28 | Apply rate limits at the edge | 06 | phase-06-flow-completion | T26, T27 | todo |

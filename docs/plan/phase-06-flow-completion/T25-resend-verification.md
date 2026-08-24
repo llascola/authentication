@@ -2,7 +2,7 @@
 id: T25
 phase: 06-flow-completion
 title: ResendVerification use-case
-status: todo
+status: done
 branch: phase-06-flow-completion
 layer: internal/app
 depends_on: [T13]

@@ -44,6 +44,7 @@ type harness struct {
 
 	register *app.RegisterService
 	verify   *app.VerifyEmailService
+	resend   *app.ResendVerificationService
 	login    *app.LoginService
 	validate *app.ValidateSessionService
 	logout   *app.LogoutService
@@ -74,6 +75,7 @@ func newHarness(t *testing.T) *harness {
 		register: app.NewRegisterService(
 			store.Users(), store.Credentials(), store.Tokens(), ml, tg, clock, nz, policy, sc, bc),
 		verify: app.NewVerifyEmailService(store.Users(), store.Tokens(), tg, clock),
+		resend: app.NewResendVerificationService(store.Users(), store.Tokens(), ml, tg, clock),
 		login: app.NewLoginService(
 			store.Users(), store.Credentials(), store.Sessions(), bc, tg, bc, nz, clock, idleTTL, absTTL),
 		validate: app.NewValidateSessionService(store.Sessions(), tg, clock),
@@ -108,6 +110,37 @@ func testDevice(t *testing.T) domain.DeviceInfo {
 		t.Fatalf("NewDeviceInfo: %v", err)
 	}
 	return d
+}
+
+// registerPending creates an account and leaves it unverified (StatusPending),
+// discarding the registration token and clearing the mail log so a following
+// assertion sees only fresh output.
+func (h *harness) registerPending(t *testing.T, email string) string {
+	t.Helper()
+	if err := h.register.Register(ctx, email, goodPassword); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_ = h.lastMailedToken(t)
+	return email
+}
+
+// deactivate closes the account behind rawEmail, moving it out of StatusPending.
+func (h *harness) deactivate(t *testing.T, rawEmail string) {
+	t.Helper()
+	email, err := domain.NewEmail(rawEmail)
+	if err != nil {
+		t.Fatalf("NewEmail: %v", err)
+	}
+	u, err := h.store.Users().FindByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("FindByEmail: %v", err)
+	}
+	if err := u.Deactivate(h.clock.now); err != nil {
+		t.Fatalf("Deactivate: %v", err)
+	}
+	if err := h.store.Users().Update(ctx, u); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
 }
 
 // registerAndVerify creates an active, verified account and returns its email.
