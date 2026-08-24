@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
@@ -44,14 +45,15 @@ func newTestEnv(t *testing.T) *testEnv {
 	ml := mailer.NewLogMailer(slog.New(slog.NewTextHandler(&buf, nil)))
 
 	deps := httpapi.Deps{
-		Register:        app.NewRegisterService(store.Users(), store.Credentials(), store.Tokens(), ml, tg, clk, nz, policy, sc, bc),
-		VerifyEmail:     app.NewVerifyEmailService(store.Users(), store.Tokens(), tg, clk),
-		Login:           app.NewLoginService(store.Users(), store.Credentials(), store.Sessions(), bc, tg, bc, nz, clk, 30*time.Minute, 24*time.Hour),
-		ValidateSession: app.NewValidateSessionService(store.Sessions(), tg, clk),
-		Logout:          app.NewLogoutService(store.Sessions(), tg, clk),
-		ChangePassword:  app.NewChangePasswordService(store.Credentials(), store.Sessions(), bc, nz, policy, sc, bc, clk),
-		ForgotPassword:  app.NewForgotPasswordService(store.Users(), store.Tokens(), ml, tg, clk),
-		ResetPassword:   app.NewResetPasswordService(store.Credentials(), store.Sessions(), store.Tokens(), tg, nz, policy, sc, bc, clk),
+		Register:           app.NewRegisterService(store.Users(), store.Credentials(), store.Tokens(), ml, tg, clk, nz, policy, sc, bc),
+		VerifyEmail:        app.NewVerifyEmailService(store.Users(), store.Tokens(), tg, clk),
+		ResendVerification: app.NewResendVerificationService(store.Users(), store.Tokens(), ml, tg, clk),
+		Login:              app.NewLoginService(store.Users(), store.Credentials(), store.Sessions(), bc, tg, bc, nz, clk, 30*time.Minute, 24*time.Hour),
+		ValidateSession:    app.NewValidateSessionService(store.Sessions(), tg, clk),
+		Logout:             app.NewLogoutService(store.Sessions(), tg, clk),
+		ChangePassword:     app.NewChangePasswordService(store.Credentials(), store.Sessions(), bc, nz, policy, sc, bc, clk),
+		ForgotPassword:     app.NewForgotPasswordService(store.Users(), store.Tokens(), ml, tg, clk),
+		ResetPassword:      app.NewResetPasswordService(store.Credentials(), store.Sessions(), store.Tokens(), tg, nz, policy, sc, bc, clk),
 	}
 	// CookieSecure must be false so the test client sends the cookie over httptest's http.
 	opts := httpapi.Options{CookieSecure: false, SessionTTL: 24 * time.Hour}
@@ -232,5 +234,89 @@ func TestSessionCookieAttributes(t *testing.T) {
 		if !strings.Contains(sc, want) {
 			t.Errorf("Set-Cookie %q missing %q", sc, want)
 		}
+	}
+}
+
+// readAll returns a response's status and body, closing it. Used where a test
+// must compare two responses byte for byte.
+func readAll(t *testing.T, resp *http.Response) (int, string) {
+	t.Helper()
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return resp.StatusCode, string(b)
+}
+
+// TestResendVerificationIsIndistinguishable is the enumeration guard on the
+// resend route: a pending account, an unregistered address, and an
+// already-verified one must produce the same status AND the same bytes, or the
+// endpoint becomes an account-existence oracle.
+func TestResendVerificationIsIndistinguishable(t *testing.T) {
+	e := newTestEnv(t)
+
+	// A pending (registered, unverified) account.
+	if resp := e.post(t, "/auth/register", map[string]string{"email": "pending@example.com", "password": goodPassword}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register pending: %d", resp.StatusCode)
+	}
+	_ = e.lastToken(t) // drop the registration token and clear the log
+
+	// An account that completed verification.
+	e.registerVerifyLogin(t, "done@example.com")
+
+	pendingStatus, pendingBody := readAll(t, e.post(t, "/auth/verify-email/resend", map[string]string{"email": "pending@example.com"}))
+	unknownStatus, unknownBody := readAll(t, e.post(t, "/auth/verify-email/resend", map[string]string{"email": "ghost@example.com"}))
+	doneStatus, doneBody := readAll(t, e.post(t, "/auth/verify-email/resend", map[string]string{"email": "done@example.com"}))
+
+	if pendingStatus != http.StatusAccepted {
+		t.Errorf("resend pending = %d, want 202", pendingStatus)
+	}
+	if unknownStatus != pendingStatus || doneStatus != pendingStatus {
+		t.Errorf("statuses differ: pending=%d unknown=%d verified=%d; all must match",
+			pendingStatus, unknownStatus, doneStatus)
+	}
+	if unknownBody != pendingBody || doneBody != pendingBody {
+		t.Errorf("bodies differ: pending=%q unknown=%q verified=%q; all must match",
+			pendingBody, unknownBody, doneBody)
+	}
+}
+
+// TestResendVerificationMailsAUsableToken proves the route does the work, not
+// just that it stays quiet: the resent token must complete verification.
+func TestResendVerificationMailsAUsableToken(t *testing.T) {
+	e := newTestEnv(t)
+	const email = "resend@example.com"
+
+	if resp := e.post(t, "/auth/register", map[string]string{"email": email, "password": goodPassword}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register: %d", resp.StatusCode)
+	}
+	_ = e.lastToken(t) // pretend the registration mail was lost
+
+	if resp := e.post(t, "/auth/verify-email/resend", map[string]string{"email": email}); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("resend = %d, want 202", resp.StatusCode)
+	}
+	tok := e.lastToken(t)
+
+	if resp := e.post(t, "/auth/verify-email", map[string]string{"token": tok}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("verify with resent token = %d, want 204", resp.StatusCode)
+	}
+	if resp := e.post(t, "/auth/login", map[string]string{"email": email, "password": goodPassword}); resp.StatusCode != http.StatusOK {
+		t.Errorf("login after resent verification = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestResendVerificationUnknownEmailMailsNothing pins the other half of the
+// enumeration contract: identical responses must not be paid for by quietly
+// mailing strangers.
+func TestResendVerificationUnknownEmailMailsNothing(t *testing.T) {
+	e := newTestEnv(t)
+	e.mailLog.Reset()
+
+	if resp := e.post(t, "/auth/verify-email/resend", map[string]string{"email": "ghost@example.com"}); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("resend unknown = %d, want 202", resp.StatusCode)
+	}
+	if tokenRe.MatchString(e.mailLog.String()) {
+		t.Error("unknown address triggered a verification mail")
 	}
 }

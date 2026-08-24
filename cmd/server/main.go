@@ -96,13 +96,14 @@ func newServer(cfg config.Config, log *slog.Logger) (*http.Server, error) {
 	deps := httpapi.Deps{
 		Register: app.NewRegisterService(
 			store.Users(), store.Credentials(), store.Tokens(), mail, tokens, clk, normalizer, policy, screen, hasher),
-		VerifyEmail:     app.NewVerifyEmailService(store.Users(), store.Tokens(), tokens, clk),
-		Login:           app.NewLoginService(store.Users(), store.Credentials(), store.Sessions(), hasher, tokens, hasher, normalizer, clk, cfg.IdleTTL, cfg.AbsTTL),
-		ValidateSession: app.NewValidateSessionService(store.Sessions(), tokens, clk),
-		Logout:          app.NewLogoutService(store.Sessions(), tokens, clk),
-		ChangePassword:  app.NewChangePasswordService(store.Credentials(), store.Sessions(), hasher, normalizer, policy, screen, hasher, clk),
-		ForgotPassword:  app.NewForgotPasswordService(store.Users(), store.Tokens(), mail, tokens, clk),
-		ResetPassword:   app.NewResetPasswordService(store.Credentials(), store.Sessions(), store.Tokens(), tokens, normalizer, policy, screen, hasher, clk),
+		VerifyEmail:        app.NewVerifyEmailService(store.Users(), store.Tokens(), tokens, clk),
+		ResendVerification: app.NewResendVerificationService(store.Users(), store.Tokens(), mail, tokens, clk),
+		Login:              app.NewLoginService(store.Users(), store.Credentials(), store.Sessions(), hasher, tokens, hasher, normalizer, clk, cfg.IdleTTL, cfg.AbsTTL),
+		ValidateSession:    app.NewValidateSessionService(store.Sessions(), tokens, clk),
+		Logout:             app.NewLogoutService(store.Sessions(), tokens, clk),
+		ChangePassword:     app.NewChangePasswordService(store.Credentials(), store.Sessions(), hasher, normalizer, policy, screen, hasher, clk),
+		ForgotPassword:     app.NewForgotPasswordService(store.Users(), store.Tokens(), mail, tokens, clk),
+		ResetPassword:      app.NewResetPasswordService(store.Credentials(), store.Sessions(), store.Tokens(), tokens, normalizer, policy, screen, hasher, clk),
 	}
 	opts := httpapi.Options{CookieSecure: cfg.CookieSecure, SessionTTL: cfg.AbsTTL}
 

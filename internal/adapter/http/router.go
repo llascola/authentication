@@ -13,6 +13,7 @@ func NewRouter(deps Deps, opts Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/register", s.register)
 	mux.HandleFunc("POST /auth/verify-email", s.verifyEmail)
+	mux.HandleFunc("POST /auth/verify-email/resend", s.resendVerification)
 	mux.HandleFunc("POST /auth/login", s.login)
 	mux.HandleFunc("POST /auth/logout", s.logout)
 	mux.HandleFunc("GET /auth/me", s.requireAuth(s.me))

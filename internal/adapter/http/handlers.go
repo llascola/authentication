@@ -17,14 +17,15 @@ const (
 
 // Deps are the use-case services the HTTP edge drives.
 type Deps struct {
-	Register        *app.RegisterService
-	VerifyEmail     *app.VerifyEmailService
-	Login           *app.LoginService
-	ValidateSession *app.ValidateSessionService
-	Logout          *app.LogoutService
-	ChangePassword  *app.ChangePasswordService
-	ForgotPassword  *app.ForgotPasswordService
-	ResetPassword   *app.ResetPasswordService
+	Register           *app.RegisterService
+	VerifyEmail        *app.VerifyEmailService
+	ResendVerification *app.ResendVerificationService
+	Login              *app.LoginService
+	ValidateSession    *app.ValidateSessionService
+	Logout             *app.LogoutService
+	ChangePassword     *app.ChangePasswordService
+	ForgotPassword     *app.ForgotPasswordService
+	ResetPassword      *app.ResetPasswordService
 }
 
 // Options are edge-level settings sourced from config.
@@ -117,6 +118,23 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"status": "verification_sent"})
+}
+
+// resendVerification: POST /auth/verify-email/resend. Public by design — the
+// caller cannot log in yet, which is the whole reason the route exists. Always
+// 202 with the same body, whether the address is unregistered, already
+// verified, or genuinely pending, so it cannot be used to probe account state.
+func (s *server) resendVerification(w http.ResponseWriter, r *http.Request) {
+	var in emailOnly
+	if err := decodeJSON(w, r, &in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "malformed request"})
+		return
+	}
+	if err := s.deps.ResendVerification.ResendVerification(r.Context(), in.Email); err != nil {
+		writeError(w, r, err) // only infra faults reach here
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "verification_sent"})
 }
 
 type tokenOnly struct {
