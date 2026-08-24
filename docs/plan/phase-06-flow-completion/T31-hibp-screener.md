@@ -2,7 +2,7 @@
 id: T31
 phase: 06-flow-completion
 title: Real breach screener (HIBP k-anonymity)
-status: todo
+status: done
 branch: phase-06-flow-completion
 layer: internal/adapter/screener
 depends_on: []

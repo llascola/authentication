@@ -226,3 +226,63 @@ func TestLoadCSRFKey(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadScreenerDefaultsToNoOp(t *testing.T) {
+	for _, k := range []string{"AUTH_PASSWORD_SCREENER", "AUTH_SCREENER_TIMEOUT", "AUTH_SCREENER_FAIL_OPEN"} {
+		t.Setenv(k, "")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// The default must keep `make check` and a fresh checkout offline.
+	if cfg.Screener != config.ScreenerNoOp {
+		t.Errorf("Screener = %q, want %q", cfg.Screener, config.ScreenerNoOp)
+	}
+	if cfg.ScreenerTimeout <= 0 {
+		t.Errorf("ScreenerTimeout = %s, want > 0", cfg.ScreenerTimeout)
+	}
+	if !cfg.ScreenerFailOpen {
+		t.Error("ScreenerFailOpen = false, want true by default")
+	}
+}
+
+func TestLoadScreenerFromEnv(t *testing.T) {
+	t.Setenv("AUTH_PASSWORD_SCREENER", "hibp")
+	t.Setenv("AUTH_SCREENER_TIMEOUT", "1500ms")
+	t.Setenv("AUTH_SCREENER_FAIL_OPEN", "false")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Screener != config.ScreenerHIBP {
+		t.Errorf("Screener = %q, want %q", cfg.Screener, config.ScreenerHIBP)
+	}
+	if cfg.ScreenerTimeout != 1500*time.Millisecond {
+		t.Errorf("ScreenerTimeout = %s, want 1.5s", cfg.ScreenerTimeout)
+	}
+	if cfg.ScreenerFailOpen {
+		t.Error("ScreenerFailOpen = true, want the configured false")
+	}
+}
+
+// TestLoadScreenerRejectsBadValues: a typo'd screener name must not silently
+// fall back to the no-op, which would disable screening without saying so.
+func TestLoadScreenerRejectsBadValues(t *testing.T) {
+	cases := map[string][2]string{
+		"unknown screener": {"AUTH_PASSWORD_SCREENER", "hipb"},
+		"zero timeout":     {"AUTH_SCREENER_TIMEOUT", "0s"},
+		"negative timeout": {"AUTH_SCREENER_TIMEOUT", "-1s"},
+		"bad duration":     {"AUTH_SCREENER_TIMEOUT", "soon"},
+		"bad bool":         {"AUTH_SCREENER_FAIL_OPEN", "maybe"},
+	}
+	for name, kv := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(kv[0], kv[1])
+			if _, err := config.Load(); err == nil {
+				t.Errorf("Load with %s=%q returned nil error", kv[0], kv[1])
+			}
+		})
+	}
+}

@@ -39,7 +39,7 @@ Statuses: `todo` · `in_progress` · `blocked` · `done`
 | T28 | Apply rate limits at the edge | 06 | phase-06-flow-completion | T26, T27 | done |
 | T29 | CSRF token for cookie-authenticated POSTs | 06 | phase-06-flow-completion | — | done |
 | T30 | RevokeAllExcept — keep the current session on password change | 06 | phase-06-flow-completion | — | done |
-| T31 | Real breach screener (HIBP k-anonymity) | 06 | phase-06-flow-completion | — | todo |
+| T31 | Real breach screener (HIBP k-anonymity) | 06 | phase-06-flow-completion | — | done |
 | T32 | ADRs for phase 06 decisions | 06 | phase-06-flow-completion | T25, T27, T29, T30, T31 | todo |
 | T33 | Postgres schema + migrations | 07 | phase-07-persistence | — | todo |
 | T34 | Postgres repository adapters | 07 | phase-07-persistence | T33 | todo |

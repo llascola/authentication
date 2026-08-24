@@ -28,3 +28,4 @@ Format: lightweight [MADR](https://adr.github.io/madr/). Filename
 | [0016](0016-mailer-delivery-and-link-assembly.md) | Mailer delivery: in-process SMTP, adapter-assembled links, secret crosses to provider | Accepted |
 | [0017](0017-keep-initiating-session-on-password-change.md) | Keep the initiating session on an authenticated password change | Accepted |
 | [0018](0018-csrf-double-submit-bound-to-session.md) | CSRF: double-submit token bound to the session by HMAC | Accepted |
+| [0019](0019-breach-screening-hibp-k-anonymity-fail-open.md) | Breach screening via HIBP k-anonymity, failing open by default | Accepted |

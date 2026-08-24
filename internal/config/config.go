@@ -17,6 +17,14 @@ const (
 	maxBcryptCost = 31
 )
 
+// Breach-screener choices. ScreenerNoOp accepts everything and is the default so
+// an offline CI run and a fresh checkout both work; ScreenerHIBP queries the
+// Pwned Passwords range API.
+const (
+	ScreenerNoOp = "noop"
+	ScreenerHIBP = "hibp"
+)
+
 // minCSRFKeyBytes is the floor for AUTH_CSRF_KEY. The token is an HMAC-SHA256,
 // whose security rests entirely on this key being unguessable; 32 bytes matches
 // the hash's block-relevant size and rules out a short passphrase being pasted
@@ -53,6 +61,12 @@ type Config struct {
 	ForgotRate   RateLimitPolicy
 	ResendRate   RateLimitPolicy
 
+	// Breach screening. Screener selects the implementation; the default keeps
+	// dev and CI offline, so `make check` never touches the network.
+	Screener         string
+	ScreenerTimeout  time.Duration
+	ScreenerFailOpen bool
+
 	// Mailer. When SMTPAddr is empty the process wires the dev-only LogMailer;
 	// when set, all other mailer fields are required and an SmtpMailer is used.
 	SMTPAddr      string
@@ -73,6 +87,16 @@ const (
 	defaultIdleTTL    = 30 * time.Minute
 	defaultAbsTTL     = 24 * time.Hour
 	defaultBcryptCost = 10 // bcrypt.DefaultCost
+
+	// defaultScreener keeps a fresh checkout and CI offline. Turning on the real
+	// screen is a deliberate deployment act (AUTH_PASSWORD_SCREENER=hibp).
+	defaultScreener = ScreenerNoOp
+	// defaultScreenerTimeout bounds a third party's latency on the registration
+	// path. Short enough that an outage degrades rather than hangs.
+	defaultScreenerTimeout = 3 * time.Second
+	// defaultScreenerFailOpen: an unreachable corpus accepts the password. See
+	// screener.FailOpen and ADR 0019 for the trade.
+	defaultScreenerFailOpen = true
 )
 
 // Default rate limits. Each applies per key, and every protected route is keyed
@@ -98,15 +122,18 @@ var (
 // values and rejecting malformed or out-of-range ones.
 func Load() (Config, error) {
 	cfg := Config{
-		ListenAddr:   defaultListenAddr,
-		IdleTTL:      defaultIdleTTL,
-		AbsTTL:       defaultAbsTTL,
-		BcryptCost:   defaultBcryptCost,
-		CookieSecure: true,
-		LoginRate:    defaultLoginRate,
-		RegisterRate: defaultRegisterRate,
-		ForgotRate:   defaultForgotRate,
-		ResendRate:   defaultResendRate,
+		ListenAddr:       defaultListenAddr,
+		IdleTTL:          defaultIdleTTL,
+		AbsTTL:           defaultAbsTTL,
+		BcryptCost:       defaultBcryptCost,
+		CookieSecure:     true,
+		Screener:         defaultScreener,
+		ScreenerTimeout:  defaultScreenerTimeout,
+		ScreenerFailOpen: defaultScreenerFailOpen,
+		LoginRate:        defaultLoginRate,
+		RegisterRate:     defaultRegisterRate,
+		ForgotRate:       defaultForgotRate,
+		ResendRate:       defaultResendRate,
 	}
 
 	if v := os.Getenv("AUTH_LISTEN_ADDR"); v != "" {
@@ -139,6 +166,23 @@ func Load() (Config, error) {
 		if *p.dst, err = rateLimitEnv(p.prefix, *p.dst); err != nil {
 			return Config{}, err
 		}
+	}
+
+	if v := os.Getenv("AUTH_PASSWORD_SCREENER"); v != "" {
+		cfg.Screener = v
+	}
+	if cfg.Screener != ScreenerNoOp && cfg.Screener != ScreenerHIBP {
+		return Config{}, fmt.Errorf("config: AUTH_PASSWORD_SCREENER must be %q or %q, got %q",
+			ScreenerNoOp, ScreenerHIBP, cfg.Screener)
+	}
+	if cfg.ScreenerTimeout, err = durationEnv("AUTH_SCREENER_TIMEOUT", cfg.ScreenerTimeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.ScreenerTimeout <= 0 {
+		return Config{}, fmt.Errorf("config: AUTH_SCREENER_TIMEOUT must be positive, got %s", cfg.ScreenerTimeout)
+	}
+	if cfg.ScreenerFailOpen, err = boolEnv("AUTH_SCREENER_FAIL_OPEN", cfg.ScreenerFailOpen); err != nil {
+		return Config{}, err
 	}
 
 	if v := os.Getenv("AUTH_CSRF_KEY"); v != "" {

@@ -90,7 +90,7 @@ func newServer(cfg config.Config, log *slog.Logger) (*http.Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	screen := screener.NoOp{}
+	screen := buildScreener(cfg, log)
 	normalizer := text.NFC{}
 	clk := clock.System{}
 	policy := domain.DefaultPasswordPolicy()
@@ -129,6 +129,35 @@ func newServer(cfg config.Config, log *slog.Logger) (*http.Server, error) {
 		Handler:           httpapi.NewRouter(deps, opts),
 		ReadHeaderTimeout: 10 * time.Second,
 	}, nil
+}
+
+// buildScreener selects the breach screener from config: the HIBP range API
+// when asked for, otherwise the no-op that accepts everything.
+//
+// The no-op is the default so a fresh checkout and CI stay offline, but it
+// provides no protection — and ADR 0011 dropped composition rules precisely
+// because breach screening was supposed to replace them. Running with it in a
+// real deployment leaves the password policy weaker than that ADR intends, so
+// say so loudly at startup rather than in a comment nobody reads.
+//
+// Fail-open is applied here, as a visible wrapper at the wiring site, because it
+// is a security decision rather than an error-handling detail (ADR 0019).
+func buildScreener(cfg config.Config, log *slog.Logger) port.PasswordScreener {
+	if cfg.Screener != config.ScreenerHIBP {
+		log.Warn("breach screening is disabled; every password is accepted",
+			"screener", cfg.Screener,
+			"impact", "ADR 0011 removed composition rules on the assumption this screen exists",
+			"action", "set AUTH_PASSWORD_SCREENER=hibp")
+		return screener.NoOp{}
+	}
+
+	var s port.PasswordScreener = screener.NewHIBP(&http.Client{Timeout: cfg.ScreenerTimeout})
+	if cfg.ScreenerFailOpen {
+		s = screener.FailOpen{Inner: s, Log: log}
+	}
+	log.Info("breach screening enabled",
+		"screener", config.ScreenerHIBP, "timeout", cfg.ScreenerTimeout, "fail_open", cfg.ScreenerFailOpen)
+	return s
 }
 
 // csrfKey resolves the secret CSRF tokens are signed with.
