@@ -97,10 +97,27 @@ func (s *server) setSessionCookie(w http.ResponseWriter, raw string) {
 	})
 }
 
+// csrfCookie builds the cookie carrying an already-minted CSRF token.
+// Deliberately NOT HttpOnly: the frontend must read it to echo it in the
+// X-CSRF-Token header, and that header is the part a cross-site form post cannot
+// produce. The cookie grants nothing on its own.
+//
+// Minting is separate from installing so a caller that also sets the session
+// cookie can fail BEFORE writing either one.
+func (s *server) csrfCookie(token string) *http.Cookie {
+	return &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   s.opts.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(s.opts.SessionTTL.Seconds()),
+	}
+}
+
 // setCSRFCookie mints a CSRF token bound to the given raw session token and
-// installs it. Deliberately NOT HttpOnly: the frontend must read it to echo it
-// in the X-CSRF-Token header, and that header is the part a cross-site form
-// post cannot produce. The cookie grants nothing on its own.
+// installs it.
 //
 // Calling this again for a live session hands the client a new token (the nonce
 // changes). It does NOT invalidate the previous one — verification is stateless.
@@ -110,15 +127,7 @@ func (s *server) setCSRFCookie(w http.ResponseWriter, sessionRaw string) error {
 	if err != nil {
 		return err
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     csrfCookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: false,
-		Secure:   s.opts.CookieSecure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(s.opts.SessionTTL.Seconds()),
-	})
+	http.SetCookie(w, s.csrfCookie(token))
 	return nil
 }
 
@@ -229,12 +238,17 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	s.setSessionCookie(w, raw)
-	// A fresh session gets a fresh CSRF token bound to it.
-	if err := s.setCSRFCookie(w, raw); err != nil {
+	// A fresh session gets a fresh CSRF token bound to it. Mint it BEFORE either
+	// cookie is written: a failure here must not leave the client holding a live
+	// session cookie alongside a 500 and no token to spend it with — a state
+	// whose only exit, logout, is itself CSRF-protected.
+	csrf, err := issueCSRFToken(s.opts.CSRFKey, raw)
+	if err != nil {
 		writeError(w, r, err)
 		return
 	}
+	s.setSessionCookie(w, raw)
+	http.SetCookie(w, s.csrfCookie(csrf))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

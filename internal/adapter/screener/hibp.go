@@ -20,7 +20,8 @@ const hibpRangeURL = "https://api.pwnedpasswords.com/range/"
 // maxRangeBytes caps the response read. A prefix bucket is ~800 suffixes of ~40
 // bytes, and padding can push it to a few thousand; 4 MiB is orders of magnitude
 // above that and exists only so a hostile or broken endpoint cannot stream
-// unbounded data into this process.
+// unbounded data into this process. Exceeding it fails the check (see
+// scanRange) rather than truncating the corpus silently.
 const maxRangeBytes = 4 << 20
 
 var _ port.PasswordScreener = (*HIBP)(nil)
@@ -99,8 +100,18 @@ func hibpDigest(plaintext string) (prefix, suffix string) {
 }
 
 // scanRange looks for suffix among the "SUFFIX:COUNT" lines of a range response.
+//
+// The read is capped at maxRangeBytes, and hitting that cap is reported as a
+// failed check rather than as "not found": a truncated bucket is one whose
+// remaining suffixes were never compared, so calling it clean would be silently
+// downgrading the screen to nothing. A match found before the cap is still a
+// match — the safe direction — so the truncation check runs only on the
+// not-found path.
 func scanRange(body io.Reader, suffix string) error {
-	sc := bufio.NewScanner(io.LimitReader(body, maxRangeBytes))
+	// One byte past the cap, so consuming the whole limit is distinguishable
+	// from a body that merely ended at it.
+	limited := &io.LimitedReader{R: body, N: maxRangeBytes + 1}
+	sc := bufio.NewScanner(limited)
 	for sc.Scan() {
 		line, count, ok := strings.Cut(strings.TrimSpace(sc.Text()), ":")
 		if !ok {
@@ -119,6 +130,9 @@ func scanRange(body io.Reader, suffix string) error {
 	}
 	if err := sc.Err(); err != nil {
 		return fmt.Errorf("screener: read hibp response: %w", err)
+	}
+	if limited.N == 0 {
+		return fmt.Errorf("screener: hibp response exceeded %d bytes; check incomplete", maxRangeBytes)
 	}
 	return nil
 }

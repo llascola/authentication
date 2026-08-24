@@ -27,18 +27,30 @@ Lint is staticcheck, pinned as a `tool` directive in `go.mod`.
 Dependencies point inward. The domain is the center and imports nothing of ours.
 
 ```
-cmd/server          process entrypoint + wiring (currently a stub)
+cmd/server          process entrypoint, composition root, graceful shutdown
 internal/domain     entities, value objects, aggregates, business rules
 internal/port       driven-port interfaces the app needs (no implementations)
-internal/adapter    infrastructure: db, http, crypto (not built yet)
-internal/app        use-case orchestration (not built yet)
+internal/app        use-case orchestration (register, login, verify, reset, …)
+internal/adapter    infrastructure, one package per concern:
+                      clock      system clock
+                      crypto     bcrypt hasher/authenticator, opaque tokens
+                      http       the driving HTTP edge (package httpapi)
+                      mailer     dev LogMailer + SmtpMailer
+                      memory     in-memory repositories (Postgres is Phase 07)
+                      ratelimit  in-process token-bucket RateLimiter
+                      screener   no-op + HIBP breach screener
+                      text       NFC normalizer
+internal/config     env-sourced configuration (stdlib only)
 ```
 
 Import rules:
 
 - `internal/domain` imports only stdlib + `google/uuid`. Never port/app/adapter.
 - `internal/port` imports `internal/domain` only. Never the reverse.
+- `internal/app` imports domain + port only. Never an adapter.
 - Adapters implement port interfaces; wiring happens in `cmd/server`.
+- `internal/adapter/http` is the one adapter allowed to import `internal/app`:
+  it is the driving side, and it holds edge-level ports (rate limiters) itself.
 
 When adding code, put it in the layer that matches its job and respect the
 arrow. If a new driven dependency is needed (a repository, a clock, a mailer),

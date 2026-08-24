@@ -187,6 +187,41 @@ func TestHIBPReportsIncompleteChecks(t *testing.T) {
 			t.Error("a failed check was reported as a breach")
 		}
 	})
+
+	// A body past the read cap is a check that could not be completed: the
+	// suffixes beyond the cap were never compared, so reporting "not found"
+	// would silently downgrade the screen to nothing.
+	t.Run("body past the read cap", func(t *testing.T) {
+		client, _ := stubClient(http.StatusOK, oversizedRange())
+		err := screener.NewHIBP(client).Screen(context.Background(), pwPassword)
+		if err == nil {
+			t.Fatal("Screen = nil on an over-cap body, want an error")
+		}
+		if errors.Is(err, port.ErrPasswordBreached) {
+			t.Error("a failed check was reported as a breach")
+		}
+		// Pin the reason: the cap was hit, not some incidental scan failure.
+		if !strings.Contains(err.Error(), "check incomplete") {
+			t.Errorf("Screen = %v, want the read-cap error", err)
+		}
+	})
+
+	// A hit found before the cap is still a hit. Rejecting the password is the
+	// safe direction, and the bytes that would confirm it again are the ones we
+	// deliberately refused to read.
+	t.Run("over-cap body with the match before the cap", func(t *testing.T) {
+		client, _ := stubClient(http.StatusOK, rangeBody(suffixPassword+":9659365")+oversizedRange())
+		if err := screener.NewHIBP(client).Screen(context.Background(), pwPassword); !errors.Is(err, port.ErrPasswordBreached) {
+			t.Errorf("Screen = %v, want ErrPasswordBreached", err)
+		}
+	})
+}
+
+// oversizedRange renders a well-formed range response comfortably larger than
+// the adapter's 4 MiB read cap, holding no line that matches suffixPassword.
+func oversizedRange() string {
+	const line = suffixSomeoneElse + ":3\r\n"
+	return strings.Repeat(line, 5<<20/len(line)+1)
 }
 
 // TestHIBPHonoursContextCancellation: the caller's deadline must bound the call,
