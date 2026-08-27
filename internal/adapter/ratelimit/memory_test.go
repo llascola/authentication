@@ -2,6 +2,7 @@ package ratelimit_test
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -249,4 +250,85 @@ func TestNewMemoryPanicsOnNilClock(t *testing.T) {
 		}
 	}()
 	_ = ratelimit.NewMemory(1, time.Minute, nil)
+}
+
+// TestSweepCadenceIsCappedForLongWindows pins the fix for reclamation being
+// tied to the policy window. Sweeping only once per window let an entry that
+// fell idle just after a sweep survive nearly two windows — an hour of pure
+// accumulation on the mail routes, which are configured at one hour.
+//
+// The timeline is built so the age rule alone is not enough: "b" is a full
+// window idle, but less than a window has passed since the previous sweep, so
+// the old cadence would have skipped it.
+func TestSweepCadenceIsCappedForLongWindows(t *testing.T) {
+	clock := &testClock{now: timeFixed}
+	m := ratelimit.NewMemory(5, time.Hour, clock)
+
+	allow(t, m, "a")
+
+	clock.advance(59 * time.Minute)
+	allow(t, m, "b") // sweeps; "a" is 59m idle, not yet a full window
+
+	clock.advance(2 * time.Minute)
+	allow(t, m, "c") // sweeps; "a" is now 61m idle and goes
+
+	if got := m.BucketCountForTest(); got != 2 {
+		t.Fatalf("bucket count = %d, want 2 (b and c) after the first reclamation", got)
+	}
+
+	// t+120m: "b" has been idle 61m — over the window — but only 59m have passed
+	// since the last sweep. Under the old once-per-window cadence nothing would
+	// run here and "b" would linger.
+	clock.advance(59 * time.Minute)
+	allow(t, m, "c")
+
+	if got := m.BucketCountForTest(); got != 1 {
+		t.Errorf("bucket count = %d, want 1: an idle bucket must not wait for a second window", got)
+	}
+}
+
+// TestEvictionUnderPressureBoundsTheMap covers the flood the age rule cannot
+// reach: keys varied faster than a window elapses, so nothing is ever old
+// enough to reclaim and the map grows for the whole window.
+func TestEvictionUnderPressureBoundsTheMap(t *testing.T) {
+	clock := &testClock{now: timeFixed}
+	m := ratelimit.NewMemory(5, time.Hour, clock)
+	m.SetMaxKeysForTest(10)
+
+	// No clock movement at all: every key is fresh, so age-based reclamation is
+	// a no-op and only the pressure valve can hold the line.
+	for i := range 50 {
+		allow(t, m, "flood-"+strconv.Itoa(i))
+	}
+
+	// The ceiling is checked before the current call inserts its own bucket, so
+	// one over is the expected steady state.
+	if got := m.BucketCountForTest(); got > 11 {
+		t.Errorf("bucket count = %d, want <= 11 (maxKeys 10 plus the in-flight insert)", got)
+	}
+}
+
+// TestEvictionUnderPressureSparesThrottledKeys is the security half of the
+// valve. Evicting a bucket hands its key a full budget back, so a throttled key
+// must never be evicted — otherwise flooding the map with junk keys would clear
+// the attacker's own throttle, and memory pressure would become a bypass.
+func TestEvictionUnderPressureSparesThrottledKeys(t *testing.T) {
+	clock := &testClock{now: timeFixed}
+	m := ratelimit.NewMemory(5, time.Hour, clock)
+	m.SetMaxKeysForTest(3)
+
+	for range 5 { // drain "victim" to zero tokens
+		allow(t, m, "victim")
+	}
+	if allowed, _ := allow(t, m, "victim"); allowed {
+		t.Fatal("victim still allowed after spending its whole budget")
+	}
+
+	for i := range 20 { // flood well past the ceiling
+		allow(t, m, "flood-"+strconv.Itoa(i))
+	}
+
+	if allowed, _ := allow(t, m, "victim"); allowed {
+		t.Error("victim allowed after the flood; eviction handed a throttled key its budget back")
+	}
 }

@@ -26,6 +26,29 @@ import (
 
 var _ port.RateLimiter = (*Memory)(nil)
 
+// maxSweepInterval caps how long reclamation may be deferred, independently of
+// the policy window.
+//
+// Sweeping once per window reads as the natural cadence, but three of the four
+// wired limiters use a one-hour window, and "at most one sweep per hour" means
+// an entry that fell idle just after a sweep survives nearly two hours. Every
+// distinct key mints an entry, and keys are cheap to vary — a fresh source
+// address out of an IPv6 /64, or a subaddressed email, per request — so that
+// second window is pure accumulation. Checking more often does not change WHICH
+// buckets are droppable (still: idle for a full window), only how promptly the
+// droppable ones go.
+const maxSweepInterval = time.Minute
+
+// defaultMaxKeys is the ceiling on live buckets before sweep starts evicting
+// under pressure, whatever their age. It is not configurable: this adapter is
+// the single-process stand-in that Phase 07 replaces with a shared backend, and
+// a limit nobody can tune is one nobody can accidentally set to zero.
+//
+// At roughly 150 bytes per entry (bucket, map overhead, key string) this is
+// ~15 MB per limiter, four limiters wired — a bound worth having, and orders of
+// magnitude above any honest key count.
+const defaultMaxKeys = 100_000
+
 // bucket is one key's remaining quota. tokens is fractional so refill is
 // continuous rather than stepped; last is the instant tokens was computed at.
 type bucket struct {
@@ -42,11 +65,13 @@ type Memory struct {
 	mu        sync.Mutex
 	buckets   map[string]*bucket
 	lastSweep time.Time
+	maxKeys   int
 
-	capacity  float64 // burst size, == limit
-	perSecond float64 // refill rate: capacity tokens per window
-	window    time.Duration
-	clock     port.Clock
+	capacity   float64 // burst size, == limit
+	perSecond  float64 // refill rate: capacity tokens per window
+	window     time.Duration
+	sweepEvery time.Duration // how often reclamation runs; <= window
+	clock      port.Clock
 }
 
 // NewMemory returns a limiter allowing limit actions per key per window, with
@@ -70,12 +95,14 @@ func NewMemory(limit int, window time.Duration, clock port.Clock) *Memory {
 		window = time.Minute
 	}
 	return &Memory{
-		buckets:   make(map[string]*bucket),
-		lastSweep: clock.Now(),
-		capacity:  float64(limit),
-		perSecond: float64(limit) / window.Seconds(),
-		window:    window,
-		clock:     clock,
+		buckets:    make(map[string]*bucket),
+		lastSweep:  clock.Now(),
+		maxKeys:    defaultMaxKeys,
+		capacity:   float64(limit),
+		perSecond:  float64(limit) / window.Seconds(),
+		window:     window,
+		sweepEvery: min(window, maxSweepInterval),
+		clock:      clock,
 	}
 }
 
@@ -105,17 +132,27 @@ func (m *Memory) Allow(_ context.Context, key string) (bool, time.Duration, erro
 	return false, m.waitFor(1 - b.tokens), nil
 }
 
-// refill credits the tokens accrued since last, capped at capacity.
+// refill credits the tokens accrued since last, capped at capacity, and marks
+// the bucket as seen now.
+func (b *bucket) refill(now time.Time, perSecond, capacity float64) {
+	b.tokens = b.tokensAt(now, perSecond, capacity)
+	b.last = now
+}
+
+// tokensAt reports what the balance would be at now WITHOUT mutating anything,
+// so eviction can judge a bucket without disturbing its idle clock — stamping
+// last would make every bucket it inspected look freshly used and postpone the
+// ordinary age-based reclamation.
 //
-// A non-positive elapsed is treated as zero. Time can move backwards across an
+// A non-positive elapsed contributes nothing. Time can move backwards across an
 // NTP step, and letting a negative elapsed subtract tokens would throttle an
 // innocent caller for as long as the step was large.
-func (b *bucket) refill(now time.Time, perSecond, capacity float64) {
+func (b *bucket) tokensAt(now time.Time, perSecond, capacity float64) float64 {
 	elapsed := now.Sub(b.last)
-	if elapsed > 0 {
-		b.tokens = math.Min(capacity, b.tokens+elapsed.Seconds()*perSecond)
+	if elapsed <= 0 {
+		return b.tokens
 	}
-	b.last = now
+	return math.Min(capacity, b.tokens+elapsed.Seconds()*perSecond)
 }
 
 // waitFor converts a token deficit into the time needed to accrue it, rounded
@@ -126,25 +163,66 @@ func (m *Memory) waitFor(deficit float64) time.Duration {
 	return time.Duration(math.Ceil(seconds * float64(time.Second)))
 }
 
-// sweep drops buckets that have sat idle long enough to be back at full
-// capacity: such a bucket is indistinguishable from an absent one, so keeping
-// it only costs memory.
+// sweep reclaims buckets. It runs on write, so there is no background goroutine
+// with a lifecycle to manage, and it does two separate jobs.
 //
-// Without this the map grows forever — an attacker varying the key (a fresh
-// source IP or address per request) would mint an entry per request and never
-// free one. Sweeping on write, at most once per window, keeps the cost
-// amortized and avoids a background goroutine with a lifecycle to manage. The
-// bound it buys: entries touched within roughly the last two windows, rather
-// than every key ever seen.
+// The first is age-based and free of consequence: a bucket idle for a full
+// window has refilled to capacity, which makes it indistinguishable from an
+// absent one, so dropping it costs no enforcement at all. Without it the map
+// grows forever — an attacker varying the key mints an entry per request and
+// never frees one. This pass is throttled to once per sweepEvery (the window,
+// or maxSweepInterval, whichever is shorter) to keep it amortized.
+//
+// The second is the pressure valve, and it is NOT free — see evictUnderPressure.
+// It runs on every call, because the condition it guards against is a flood, and
+// a flood must not have to wait for a timer.
+//
+// The bound this buys: roughly the keys seen within the last window, plus
+// however many of those are currently throttled, and no more than maxKeys of
+// anything else.
 //
 // Callers must hold m.mu.
 func (m *Memory) sweep(now time.Time) {
-	if now.Sub(m.lastSweep) < m.window {
-		return
+	if now.Sub(m.lastSweep) >= m.sweepEvery {
+		m.lastSweep = now
+		for key, b := range m.buckets {
+			if now.Sub(b.last) >= m.window {
+				delete(m.buckets, key)
+			}
+		}
 	}
-	m.lastSweep = now
+	if len(m.buckets) > m.maxKeys {
+		m.evictUnderPressure(now)
+	}
+}
+
+// evictUnderPressure drops buckets before their age makes them free to drop,
+// to stop a key-rotation flood from growing the map without bound.
+//
+// Evicting a live bucket RETURNS QUOTA: the key's next request finds no entry
+// and starts again at full capacity. So the rule is that a bucket currently
+// holding less than one token — a key that is being throttled right now — is
+// never evicted. Those are the entries enforcement actually rests on, and
+// dropping one would let an attacker switch off their own throttle by flooding
+// the map with junk keys, turning memory pressure into a limiter bypass.
+//
+// What that leaves evictable is the population a flood creates: keys used once
+// or twice, sitting near capacity, that would have been dropped a window later
+// anyway. Giving one of those its full budget back is worth nothing to an
+// attacker who was never going to reuse the key.
+//
+// The residual: if every bucket is throttled, nothing is evictable and the map
+// stays over maxKeys. That is the correct direction — enforcement outranks the
+// ceiling — and it is not cheap to reach, since draining a key costs the
+// attacker a full limit's worth of requests per entry.
+//
+// Callers must hold m.mu.
+func (m *Memory) evictUnderPressure(now time.Time) {
 	for key, b := range m.buckets {
-		if now.Sub(b.last) >= m.window {
+		if len(m.buckets) <= m.maxKeys {
+			return
+		}
+		if b.tokensAt(now, m.perSecond, m.capacity) >= 1 {
 			delete(m.buckets, key)
 		}
 	}
