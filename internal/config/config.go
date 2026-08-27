@@ -25,6 +25,69 @@ const (
 	ScreenerHIBP = "hibp"
 )
 
+// Trusted-proxy hop counting for client-IP resolution.
+//
+// READ THIS BEFORE SETTING AUTH_TRUSTED_PROXY_HOPS. The default is 0, which
+// means "trust no forwarding header" — the posture ADR 0015 locked and the only
+// safe one for a server exposed directly. Raising it is a deliberate statement
+// about network topology, and getting it wrong is worse than leaving it alone.
+//
+// Why the knob exists at all: this server speaks plain HTTP, and CookieSecure
+// defaults to true, so a real deployment terminates TLS in front of it. From
+// that moment the TCP peer of every request is the proxy, and the per-IP rate
+// limits of ADR 0021 collapse into ONE bucket shared by the whole internet —
+// ten logins a minute for all users combined. That is a self-inflicted outage,
+// and it needs no attacker to trigger it.
+//
+// Why a hop COUNT and not "read the header": X-Forwarded-For is append-only and
+// the client writes the first entry. A request arriving as
+//
+//	X-Forwarded-For: 1.2.3.4                     (whatever the client typed)
+//
+// leaves your proxy as
+//
+//	X-Forwarded-For: 1.2.3.4, 203.0.113.9
+//	                          ^^^^^^^^^^^ written by YOUR proxy from the
+//	                                      connection it actually accepted
+//
+// Everything left of your own infrastructure's entries is attacker-controlled;
+// everything right of them is not. So the value to trust is the Nth from the
+// RIGHT, where N is the number of proxies YOU operate. One load balancer is 1.
+// A CDN in front of a load balancer is 2.
+//
+// Setting N too high reads an entry the client forged. Setting it too low reads
+// an internal proxy address, which silently recreates the single-bucket problem.
+// Neither is detectable from inside the process, which is why this is
+// configuration and not a heuristic.
+//
+// THE ASSUMPTION THIS RESTS ON: the application port is reachable only through
+// those proxies. If anything can open a connection directly, it writes the whole
+// header itself, there is no infrastructure-written entry on the right, and hop
+// counting hands the caller a fresh rate-limit bucket per request — the exact
+// bypass the default is protecting against. Bind to a private interface, or use
+// a security group, before raising this.
+//
+// A SAFER ALTERNATIVE IF YOU CONTROL THE PROXY: configure it to REPLACE the
+// header rather than append to it, discarding whatever the client sent —
+// nginx `proxy_set_header X-Forwarded-For $remote_addr` (replace) instead of
+// `$proxy_add_x_forwarded_for` (append). The header then carries exactly one
+// value, always written by you, and AUTH_TRUSTED_PROXY_HOPS=1 is correct and
+// forgery-proof regardless of what the client sends. Managed load balancers
+// mostly append: AWS ALB appends, Cloudflare appends to XFF while also setting
+// its own single-valued CF-Connecting-IP.
+//
+// See ADR 0023 for the decision and what it deliberately does not do.
+const (
+	// defaultTrustedProxyHops is 0: RemoteAddr only, no header consulted.
+	defaultTrustedProxyHops = 0
+
+	// maxTrustedProxyHops rejects a value no real chain reaches. It is a typo
+	// guard, not a security boundary: an over-large N silently degrades to
+	// RemoteAddr, which is the failure this whole knob exists to avoid, so it is
+	// better refused at startup than discovered from a rate-limit graph.
+	maxTrustedProxyHops = 8
+)
+
 // minCSRFKeyBytes is the floor for AUTH_CSRF_KEY. The token is an HMAC-SHA256,
 // whose security rests entirely on this key being unguessable; 32 bytes matches
 // the hash's block-relevant size and rules out a short passphrase being pasted
@@ -52,6 +115,12 @@ type Config struct {
 	// fine while sessions are in-memory (a restart drops both) and must not
 	// survive into Phase 07, where sessions outlive the process.
 	CSRFKey []byte
+
+	// TrustedProxyHops is how many proxies YOU operate in front of this server.
+	// 0 (the default) means the client IP is RemoteAddr and no forwarding header
+	// is consulted at all. See the block comment above the constants — do not
+	// raise this without reading it.
+	TrustedProxyHops int
 
 	// Rate limits, one policy per protected route. Defaults are chosen so a
 	// real person never meets them: someone mistyping a password a few times,
@@ -127,6 +196,7 @@ func Load() (Config, error) {
 		AbsTTL:           defaultAbsTTL,
 		BcryptCost:       defaultBcryptCost,
 		CookieSecure:     true,
+		TrustedProxyHops: defaultTrustedProxyHops,
 		Screener:         defaultScreener,
 		ScreenerTimeout:  defaultScreenerTimeout,
 		ScreenerFailOpen: defaultScreenerFailOpen,
@@ -152,6 +222,13 @@ func Load() (Config, error) {
 	}
 	if cfg.CookieSecure, err = boolEnv("AUTH_COOKIE_SECURE", cfg.CookieSecure); err != nil {
 		return Config{}, err
+	}
+	if cfg.TrustedProxyHops, err = intEnv("AUTH_TRUSTED_PROXY_HOPS", cfg.TrustedProxyHops); err != nil {
+		return Config{}, err
+	}
+	if cfg.TrustedProxyHops < 0 || cfg.TrustedProxyHops > maxTrustedProxyHops {
+		return Config{}, fmt.Errorf("config: AUTH_TRUSTED_PROXY_HOPS must be in [0,%d], got %d",
+			maxTrustedProxyHops, cfg.TrustedProxyHops)
 	}
 
 	for _, p := range []struct {

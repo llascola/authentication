@@ -202,3 +202,56 @@ func TestServerStartsAndShutsDownCleanly(t *testing.T) {
 		t.Fatalf("Serve returned %v, want ErrServerClosed", err)
 	}
 }
+
+// TestNewServerSetsEveryTimeout guards the slow-loris hole: a zero value on any
+// of these fields means "no deadline", and only ReadHeaderTimeout used to be
+// set — which bounds the headers and leaves the body unbounded in time.
+func TestNewServerSetsEveryTimeout(t *testing.T) {
+	srv, err := newServer(testConfig(), discardLog())
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		got  time.Duration
+	}{
+		{"ReadHeaderTimeout", srv.ReadHeaderTimeout},
+		{"ReadTimeout", srv.ReadTimeout},
+		{"WriteTimeout", srv.WriteTimeout},
+		{"IdleTimeout", srv.IdleTimeout},
+	} {
+		if tc.got <= 0 {
+			t.Errorf("%s = %v, want > 0 (zero means no deadline at all)", tc.name, tc.got)
+		}
+	}
+
+	// The body deadline has to cover the header deadline, or headers that took
+	// their full allowance leave no time for the body.
+	if srv.ReadTimeout < srv.ReadHeaderTimeout {
+		t.Errorf("ReadTimeout %v < ReadHeaderTimeout %v", srv.ReadTimeout, srv.ReadHeaderTimeout)
+	}
+}
+
+// TestWriteTimeoutTracksTheScreenerTimeout pins the coupling: the register path
+// blocks on the breach screener before it writes, so a fixed write budget would
+// start truncating responses as soon as an operator raised AUTH_SCREENER_TIMEOUT
+// past it.
+func TestWriteTimeoutTracksTheScreenerTimeout(t *testing.T) {
+	cfg := testConfig()
+	cfg.ScreenerTimeout = 60 * time.Second
+
+	srv, err := newServer(cfg, discardLog())
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	if srv.WriteTimeout <= cfg.ScreenerTimeout {
+		t.Errorf("WriteTimeout = %v, want > the screener timeout %v", srv.WriteTimeout, cfg.ScreenerTimeout)
+	}
+
+	// A short screener timeout must not drag the budget below its floor.
+	cfg.ScreenerTimeout = time.Second
+	if got := writeTimeout(cfg); got != baseWriteTimeout {
+		t.Errorf("writeTimeout with a 1s screener = %v, want the %v floor", got, baseWriteTimeout)
+	}
+}

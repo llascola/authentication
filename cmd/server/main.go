@@ -32,6 +32,36 @@ import (
 
 const shutdownTimeout = 10 * time.Second
 
+// Server timeouts.
+//
+// ReadHeaderTimeout on its own leaves the request BODY unbounded in time.
+// MaxBytesReader caps how many bytes a request may carry (64 KiB), not how
+// slowly they may arrive, so a client dribbling a body one byte per minute
+// holds a connection and a goroutine indefinitely — the classic slow-loris,
+// aimed at the body instead of the headers.
+//
+// It lands somewhere particularly bad here: the per-email rate limiter reads
+// the body itself, before the handler, so the stall happens INSIDE the
+// middleware and the throttle never gets to count a request that never
+// finishes. No limit can bound a request that does not complete; only a
+// deadline can.
+//
+// The values are generous by orders of magnitude for auth payloads, which are a
+// few hundred bytes and finish in well under a second.
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 15 * time.Second
+	idleTimeout       = 60 * time.Second
+
+	// baseWriteTimeout is the floor for producing a response.
+	baseWriteTimeout = 15 * time.Second
+
+	// screenerWriteMargin is what the write budget reserves for everything the
+	// register and reset paths do BESIDES the breach-screen call: the bcrypt
+	// hash at the configured cost, the repository writes, and the mail handoff.
+	screenerWriteMargin = 10 * time.Second
+)
+
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(log)
@@ -118,17 +148,62 @@ func newServer(cfg config.Config, log *slog.Logger) (*http.Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	logClientIPResolution(cfg, log)
 	opts := httpapi.Options{
-		CookieSecure: cfg.CookieSecure,
-		SessionTTL:   cfg.AbsTTL,
-		CSRFKey:      csrfKey,
+		CookieSecure:     cfg.CookieSecure,
+		SessionTTL:       cfg.AbsTTL,
+		CSRFKey:          csrfKey,
+		TrustedProxyHops: cfg.TrustedProxyHops,
 	}
 
 	return &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           httpapi.NewRouter(deps, opts),
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout(cfg),
+		IdleTimeout:       idleTimeout,
 	}, nil
+}
+
+// writeTimeout derives the response-write budget from config instead of fixing
+// it, because the duration of the slowest handler is itself configurable: the
+// register and password-reset paths block on the breach screener for up to
+// AUTH_SCREENER_TIMEOUT before they write anything.
+//
+// A hard-coded budget would silently start cutting those requests off the
+// moment an operator raised the screener timeout past it — two independently
+// sensible numbers interacting, which is the kind of thing only found in
+// production. Tying them together means raising one cannot break the other.
+func writeTimeout(cfg config.Config) time.Duration {
+	return max(baseWriteTimeout, cfg.ScreenerTimeout+screenerWriteMargin)
+}
+
+// logClientIPResolution states at startup how the client address is being
+// derived, because both plausible misconfigurations are silent.
+//
+// Running behind a proxy with hops at 0 makes every request appear to come from
+// the proxy, which collapses the per-IP rate limits into a single bucket shared
+// by every user — an outage that arrives without an attacker and shows up as
+// "logins started returning 429" long after the deploy that caused it. Running
+// with hops set while directly reachable is the opposite failure: the header
+// becomes forgeable and the limit stops limiting.
+//
+// Neither is visible from inside the process, so the resolution in force is
+// logged rather than inferred. It is Info, not Warn: 0 is correct for a directly
+// exposed server and must not cry wolf.
+func logClientIPResolution(cfg config.Config, log *slog.Logger) {
+	if cfg.TrustedProxyHops == 0 {
+		log.Info("client IP comes from RemoteAddr; no forwarding header is trusted",
+			"trusted_proxy_hops", 0,
+			"impact", "behind a reverse proxy every request keys to the proxy, collapsing per-IP rate limits into one shared bucket",
+			"action", "if a proxy terminates TLS in front of this server, set AUTH_TRUSTED_PROXY_HOPS to the number of proxies you operate")
+		return
+	}
+	log.Info("client IP comes from X-Forwarded-For",
+		"trusted_proxy_hops", cfg.TrustedProxyHops,
+		"entry", "counted from the right",
+		"assumes", "this server is reachable only through those proxies; direct reachability makes the header forgeable")
 }
 
 // buildScreener selects the breach screener from config: the HIBP range API

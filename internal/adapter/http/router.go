@@ -42,6 +42,10 @@ import (
 // the only route that could. The public routes need no token: no session exists
 // yet, so there is no ambient authority for a cross-site request to borrow.
 //
+// GET /healthz sits outside /auth/ and outside all of the above: no session, no
+// CSRF token, no rate limit. It is a liveness probe that does no work and
+// answers everyone identically — see health.
+//
 // It panics if any limiter, or the CSRF key, is missing — see Limits and
 // Options.CSRFKey.
 func NewRouter(deps Deps, opts Options) http.Handler {
@@ -51,10 +55,14 @@ func NewRouter(deps Deps, opts Options) http.Handler {
 	}
 	s := &server{deps: deps, opts: opts}
 
-	perIP := func(l port.RateLimiter) middleware { return rateLimit(l, ipKey) }
+	// The IP key is bound once here, with the deployment's proxy depth, so no
+	// per-request code has to consult configuration (ADR 0023).
+	perIPKey := ipKey(opts.TrustedProxyHops)
+	perIP := func(l port.RateLimiter) middleware { return rateLimit(l, perIPKey) }
 	perEmail := func(l port.RateLimiter) middleware { return rateLimit(l, emailKey) }
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", health)
 	mux.HandleFunc("POST /auth/register", chain(s.register,
 		perIP(deps.Limits.Register)))
 	mux.HandleFunc("POST /auth/verify-email", s.verifyEmail)

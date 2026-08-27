@@ -122,6 +122,24 @@ func TestRateLimitIsIdenticalForUnknownAccounts(t *testing.T) {
 // TestPerEmailLimitSpansSourceAddresses is the point of keying by email at all:
 // a per-IP limit alone lets an attacker with a pool of addresses mail-bomb one
 // inbox freely.
+// postVia is postFrom with a forwarding header, for tests that put the server
+// behind a proxy: every request shares one peer address (the proxy) and is told
+// apart only by X-Forwarded-For.
+func (e *testEnv) postVia(t *testing.T, remoteAddr, xff, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(b))
+	req.RemoteAddr = remoteAddr
+	req.Header.Set("X-Forwarded-For", xff)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, req)
+	return rec
+}
+
 func TestPerEmailLimitSpansSourceAddresses(t *testing.T) {
 	const limit = 2
 	e := newTestEnvWithLimits(t, tightLimits("resend", limit))
@@ -237,7 +255,7 @@ func TestNewRouterPanicsOnMissingLimiter(t *testing.T) {
 
 // --- key derivation --------------------------------------------------------
 
-func TestIPKeyUsesRemoteAddrOnly(t *testing.T) {
+func TestIPKeyUsesRemoteAddrOnlyByDefault(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
 	req.RemoteAddr = "198.51.100.4:5555"
 	// A forged forwarding header must not change the key: a key the caller
@@ -245,7 +263,7 @@ func TestIPKeyUsesRemoteAddrOnly(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "10.0.0.1")
 	req.Header.Set("X-Real-IP", "10.0.0.2")
 
-	key, ok := httpapi.IPKeyForTest(req)
+	key, ok := httpapi.IPKeyForTest(0)(req)
 	if !ok {
 		t.Fatal("ipKey returned no key for a normal request")
 	}
@@ -651,5 +669,134 @@ func TestCSRFTokenDoesNotVerifyUnderAnotherKey(t *testing.T) {
 	}
 	if httpapi.ValidCSRFTokenForTest(testCSRFKey, tok, "a-different-session") {
 		t.Error("token verified against a different session")
+	}
+}
+
+// --- trusted-proxy client IP (ADR 0023) ------------------------------------
+
+// TestClientIPResolution is the table for how the client address is derived at
+// each proxy depth. The cases that matter are the fallbacks: every way the
+// header can fail to deliver a trustworthy value has to land back on
+// RemoteAddr, which is the hops == 0 behaviour.
+func TestClientIPResolution(t *testing.T) {
+	const peer = "10.0.1.5:4444" // the proxy, as far as the kernel is concerned
+
+	cases := []struct {
+		name string
+		hops int
+		xff  string
+		want string
+	}{
+		{"hops 0 ignores the header entirely", 0, "1.2.3.4, 203.0.113.9", "10.0.1.5"},
+		{"one proxy takes the rightmost entry", 1, "1.2.3.4, 203.0.113.9", "203.0.113.9"},
+		{"two proxies take the second from the right", 2, "1.2.3.4, 203.0.113.9, 10.0.2.7", "203.0.113.9"},
+		{"no header falls back to the peer", 1, "", "10.0.1.5"},
+		{"fewer entries than the chain falls back", 2, "203.0.113.9", "10.0.1.5"},
+		{"a non-IP entry falls back", 1, "1.2.3.4, not-an-ip", "10.0.1.5"},
+		{"RFC 7239 'unknown' falls back", 1, "unknown", "10.0.1.5"},
+		{"host:port entries are unwrapped", 1, "203.0.113.9:1234", "203.0.113.9"},
+		{"IPv6 is preserved", 1, "1.2.3.4, 2001:db8::1", "2001:db8::1"},
+		{"whitespace is tolerated", 1, "1.2.3.4 ,   203.0.113.9  ", "203.0.113.9"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+			req.RemoteAddr = peer
+			if tc.xff != "" {
+				req.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			if got := httpapi.ClientIPForTest(req, tc.hops); got != tc.want {
+				t.Errorf("clientIP(hops=%d, xff=%q) = %q, want %q", tc.hops, tc.xff, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClientIPIgnoresAForgedPrefix is the security property the whole scheme
+// rests on. The caller writes the left of X-Forwarded-For and can put anything
+// there; only the entries the operator's own proxies appended, on the right, are
+// worth reading. However much junk is prepended, the answer must not move.
+func TestClientIPIgnoresAForgedPrefix(t *testing.T) {
+	const real = "203.0.113.9"
+
+	for _, forged := range []string{
+		"9.9.9.9",
+		"9.9.9.9, 8.8.8.8, 7.7.7.7",
+		"not-an-ip, 0.0.0.0, ::1",
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+		req.RemoteAddr = "10.0.1.5:4444"
+		req.Header.Set("X-Forwarded-For", forged+", "+real)
+
+		if got := httpapi.ClientIPForTest(req, 1); got != real {
+			t.Errorf("with forged prefix %q: clientIP = %q, want %q", forged, got, real)
+		}
+	}
+}
+
+// TestClientIPJoinsRepeatedHeaderLines closes the index-shifting trick. Repeated
+// header lines are semantically one comma-separated list, but Go keeps them
+// apart — so a caller that sends its own X-Forwarded-For LINE, ahead of the one
+// the proxy writes, would move a forged entry into the trusted position for any
+// implementation that read only the first line.
+func TestClientIPJoinsRepeatedHeaderLines(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	req.RemoteAddr = "10.0.1.5:4444"
+	req.Header.Add("X-Forwarded-For", "9.9.9.9") // the caller's line
+	req.Header.Add("X-Forwarded-For", "203.0.113.9")
+
+	if got := httpapi.ClientIPForTest(req, 1); got != "203.0.113.9" {
+		t.Errorf("clientIP = %q, want 203.0.113.9: header lines must be joined before counting", got)
+	}
+}
+
+// TestIPKeySeparatesClientsBehindOneProxy is the reason the knob exists. With
+// hops unset, every request through a proxy shares one key — ten logins a minute
+// for the entire user base. With it set, each client gets its own bucket again.
+func TestIPKeySeparatesClientsBehindOneProxy(t *testing.T) {
+	req := func(xff string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+		r.RemoteAddr = "10.0.1.5:4444"
+		r.Header.Set("X-Forwarded-For", xff)
+		return r
+	}
+
+	collapsed := httpapi.IPKeyForTest(0)
+	a, _ := collapsed(req("203.0.113.9"))
+	b, _ := collapsed(req("198.51.100.4"))
+	if a != b {
+		t.Errorf("hops 0: keys %q and %q differ; the proxy's address is all there is to key on", a, b)
+	}
+
+	resolved := httpapi.IPKeyForTest(1)
+	a, _ = resolved(req("203.0.113.9"))
+	b, _ = resolved(req("198.51.100.4"))
+	if a == b {
+		t.Errorf("hops 1: both clients keyed to %q; each must get its own bucket", a)
+	}
+}
+
+// TestRateLimitIsPerClientBehindAProxy proves the router actually wires the
+// configured depth through, not just that clientIP can compute it. Every request
+// arrives from the same peer; only the forwarded address tells them apart.
+func TestRateLimitIsPerClientBehindAProxy(t *testing.T) {
+	const limit = 2
+	e := newTestEnvBehindProxies(t, tightLimits("login", limit), 1)
+	const proxy = "10.0.1.5:4444"
+
+	body := func(email string) map[string]string {
+		return map[string]string{"email": email, "password": "guess"}
+	}
+	for i := range limit {
+		if rec := e.postVia(t, proxy, "203.0.113.9", "/auth/login", body("a@example.com")); rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("request %d was throttled while still under the limit", i)
+		}
+	}
+	if rec := e.postVia(t, proxy, "203.0.113.9", "/auth/login", body("b@example.com")); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("over-limit request from one forwarded client = %d, want 429", rec.Code)
+	}
+	// A different client, same proxy, must still have its own budget.
+	if rec := e.postVia(t, proxy, "198.51.100.4", "/auth/login", body("c@example.com")); rec.Code == http.StatusTooManyRequests {
+		t.Error("a second client behind the same proxy was throttled by the first client's traffic")
 	}
 }

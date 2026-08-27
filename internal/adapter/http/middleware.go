@@ -139,24 +139,94 @@ func setRetryAfter(w http.ResponseWriter, d time.Duration) {
 	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
 }
 
-// ipKey keys a limiter by the peer address of the connection.
+// ipKey builds a limiter key from the client address, resolved per the
+// deployment's trusted-proxy setting (ADR 0023).
 //
-// RemoteAddr only: no X-Forwarded-For, no X-Real-IP (ADR 0015 trusts no proxy
-// header). A key an attacker can set is not a limit — one header line per
-// request would give them a fresh bucket every time. If a reverse proxy is put
-// in front of this server, trusting its forwarding header becomes a deliberate,
-// ADR-recorded change, not an accident.
-func ipKey(r *http.Request) (string, bool) {
+// It is a factory rather than a plain keyFunc because hops is deployment
+// configuration: the router binds it once at wiring time, so no per-request code
+// has to reach for config.
+func ipKey(hops int) keyFunc {
+	return func(r *http.Request) (string, bool) {
+		host := clientIP(r, hops)
+		if host == "" {
+			return "", false
+		}
+		return "ip:" + host, true
+	}
+}
+
+// clientIP resolves who is calling, and is the ONE place that question is
+// answered — the rate limiter and the session's DeviceInfo must not disagree
+// about it.
+//
+// hops <= 0 (the default) is RemoteAddr and nothing else: no X-Forwarded-For, no
+// X-Real-IP. A key an attacker can set is not a limit, and every forwarding
+// header is attacker-settable by default — one extra header line per request
+// would otherwise buy a fresh rate-limit bucket every time. This is the posture
+// ADR 0015 locked.
+//
+// hops > 0 says the operator runs exactly that many proxies in front of this
+// server, so the last hops entries of X-Forwarded-For were written by their
+// infrastructure rather than by the caller. The value taken is the hops'th from
+// the RIGHT: everything to its left is the client's to forge and is ignored.
+// ADR 0023 and the block comment in internal/config carry the reasoning and the
+// network assumption this rests on.
+//
+// Every way the header can fail to deliver a usable address — absent, too few
+// entries for the configured chain, an entry that is not an IP — falls back to
+// RemoteAddr. That is the safe direction: a request that did not arrive the way
+// the configuration claims is treated as if the header were not trusted at all,
+// which is exactly the hops == 0 behaviour.
+func clientIP(r *http.Request, hops int) string {
+	if hops > 0 {
+		if ip := forwardedFor(r, hops); ip != "" {
+			return ip
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		// Not host:port (a unix socket, say). The raw value still identifies the
 		// peer, which is all a key has to do.
 		host = r.RemoteAddr
 	}
-	if host == "" {
-		return "", false
+	return host
+}
+
+// forwardedFor returns the hops'th X-Forwarded-For entry counted from the right,
+// or "" if there is no trustworthy one.
+//
+// It joins every X-Forwarded-For header LINE before splitting, because repeated
+// header lines are semantically one comma-separated list and Go keeps them
+// apart. Reading only the first line would let a caller send a second line to
+// shift the indices and move a forged entry into the trusted position.
+//
+// The result must parse as an IP. A proxy that writes something else — a
+// hostname, an obfuscated identifier, "unknown" per RFC 7239 — yields no answer
+// rather than a key built from an arbitrary string.
+func forwardedFor(r *http.Request, hops int) string {
+	values := r.Header.Values("X-Forwarded-For")
+	if len(values) == 0 {
+		return ""
 	}
-	return "ip:" + host, true
+	parts := strings.Split(strings.Join(values, ","), ",")
+	i := len(parts) - hops
+	if i < 0 {
+		// Fewer entries than the configured chain: this request did not traverse
+		// the proxies the operator described, so nothing here is trustworthy.
+		return ""
+	}
+	candidate := strings.TrimSpace(parts[i])
+	if candidate == "" {
+		return ""
+	}
+	// Some proxies write host:port, and IPv6 arrives bracketed.
+	if host, _, err := net.SplitHostPort(candidate); err == nil {
+		candidate = host
+	}
+	if net.ParseIP(candidate) == nil {
+		return ""
+	}
+	return candidate
 }
 
 // emailKey keys a limiter by the email in the request body, canonicalised

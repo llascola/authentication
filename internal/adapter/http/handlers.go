@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"net"
 	"net/http"
 	"time"
 
@@ -56,6 +55,15 @@ type Options struct {
 	// NewRouter panics on an empty one, because an empty key makes every token
 	// forgeable by anyone who reads this source.
 	CSRFKey []byte
+
+	// TrustedProxyHops is how many proxies the operator runs in front of this
+	// server, and therefore how many X-Forwarded-For entries (counted from the
+	// right) were written by their infrastructure rather than by the caller.
+	//
+	// Zero — the default, and the value every test uses — consults no forwarding
+	// header at all and takes the client address from RemoteAddr. See clientIP,
+	// ADR 0023, and the block comment in internal/config before raising it.
+	TrustedProxyHops int
 }
 
 type server struct {
@@ -65,12 +73,62 @@ type server struct {
 
 // --- JSON + cookie helpers -------------------------------------------------
 
+// setSecurityHeaders stamps the headers every response from this edge carries.
+// It is called from writeJSON and writeNoContent, which between them are the
+// only ways a handler here finishes — so the set cannot drift per route.
+//
+// Cache-Control: no-store — an authentication response must not be stored by
+// anything. GET /auth/me answers 200 with the caller's own user id, and a 200
+// carrying no cache directives is heuristically cacheable (RFC 9111 §4.2.2). A
+// shared cache keys on the URL, not on the session cookie that distinguishes
+// one caller from the next, so the failure mode is one user being served
+// another's identity — with no attacker involved. Every response here is
+// per-session by definition and none is worth caching, so the blunt directive
+// is the right one; no-store also makes a Vary on the cookie moot.
+//
+// X-Content-Type-Options: nosniff — stops a browser second-guessing the declared
+// application/json. Low stakes on a JSON-only API that renders nothing, and
+// free at a single choke point.
+func setSecurityHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Content-Type-Options", "nosniff")
+}
+
 func writeJSON(w http.ResponseWriter, status int, body any) {
+	setSecurityHeaders(w)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if body != nil {
 		_ = json.NewEncoder(w).Encode(body)
 	}
+}
+
+// writeNoContent ends a state change that succeeded and has nothing to say.
+//
+// It exists so the 204 routes pick up setSecurityHeaders too: a bare
+// w.WriteHeader(204) would skip them, and "the paths with no body are the ones
+// that quietly lost the headers" is exactly the drift a single choke point is
+// meant to prevent.
+func writeNoContent(w http.ResponseWriter) {
+	setSecurityHeaders(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// health answers a liveness probe: this process is up and serving HTTP.
+//
+// Deliberately dumb — it checks nothing. A health endpoint that pings its
+// dependencies converts one slow dependency into a synchronised restart of
+// every replica, which is a worse outage than the one it was added to catch.
+// Readiness, if it is ever wanted, is a second endpoint with its own semantics
+// rather than a widening of this one.
+//
+// Unauthenticated and unthrottled, and outside /auth/: it touches no store,
+// does no work, and gives every caller the same answer, so there is nothing to
+// leak and nothing to exhaust.
+func health(w http.ResponseWriter, _ *http.Request) {
+	setSecurityHeaders(w)
+	w.WriteHeader(http.StatusOK)
 }
 
 // decodeJSON reads a size-limited JSON body into dst. A malformed or oversized
@@ -155,15 +213,18 @@ func (s *server) clearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
-// deviceFromRequest builds DeviceInfo from the connection. No proxy headers are
-// trusted for the slice. A RemoteAddr without a parseable host yields an empty
-// IP, which DeviceInfo accepts.
-func deviceFromRequest(r *http.Request) domain.DeviceInfo {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = ""
-	}
-	d, _ := domain.NewDeviceInfo(host, r.UserAgent(), "")
+// deviceFromRequest builds DeviceInfo from the request, resolving the address
+// through the same clientIP the rate limiter uses.
+//
+// Sharing that resolution is the point: these two are the only consumers of "who
+// is calling", and letting them disagree would mean a session recording the load
+// balancer's address while the throttle counted the real client, or the reverse.
+// Behind a proxy with hops unset, every session's recorded IP is the proxy's —
+// uniform, and useless for telling one device from another.
+//
+// An unresolvable address yields an empty IP, which DeviceInfo accepts.
+func (s *server) deviceFromRequest(r *http.Request) domain.DeviceInfo {
+	d, _ := domain.NewDeviceInfo(clientIP(r, s.opts.TrustedProxyHops), r.UserAgent(), "")
 	return d
 }
 
@@ -222,7 +283,7 @@ func (s *server) verifyEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeNoContent(w)
 }
 
 // login: POST /auth/login. On success sets the session cookie; every failure is
@@ -233,7 +294,7 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "malformed request"})
 		return
 	}
-	raw, err := s.deps.Login.Login(r.Context(), in.Email, in.Password, deviceFromRequest(r))
+	raw, err := s.deps.Login.Login(r.Context(), in.Email, in.Password, s.deviceFromRequest(r))
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -260,7 +321,7 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.clearSessionCookie(w)
 	s.clearCSRFCookie(w)
-	w.WriteHeader(http.StatusNoContent)
+	writeNoContent(w)
 }
 
 // me: GET /auth/me. Behind requireAuth; reports the authenticated identity.
@@ -308,7 +369,7 @@ func (s *server) changePassword(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeNoContent(w)
 }
 
 type emailOnly struct {
@@ -346,5 +407,5 @@ func (s *server) resetPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeNoContent(w)
 }

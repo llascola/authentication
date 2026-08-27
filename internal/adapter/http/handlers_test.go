@@ -50,6 +50,13 @@ func newTestEnv(t *testing.T) *testEnv {
 
 func newTestEnvWithLimits(t *testing.T, limits httpapi.Limits) *testEnv {
 	t.Helper()
+	return newTestEnvBehindProxies(t, limits, 0)
+}
+
+// newTestEnvBehindProxies builds the same environment with a non-default
+// trusted-proxy depth, so a test can prove the router actually honours it.
+func newTestEnvBehindProxies(t *testing.T, limits httpapi.Limits, hops int) *testEnv {
+	t.Helper()
 	store := memory.NewStore()
 	bc := crypto.NewBcrypt(4)
 	tg := crypto.TokenGen{}
@@ -74,7 +81,7 @@ func newTestEnvWithLimits(t *testing.T, limits httpapi.Limits) *testEnv {
 		ResetPassword:      app.NewResetPasswordService(store.Credentials(), store.Sessions(), store.Tokens(), tg, nz, policy, sc, bc, clk),
 	}
 	// CookieSecure must be false so the test client sends the cookie over httptest's http.
-	opts := httpapi.Options{CookieSecure: false, SessionTTL: 24 * time.Hour, CSRFKey: testCSRFKey}
+	opts := httpapi.Options{CookieSecure: false, SessionTTL: 24 * time.Hour, CSRFKey: testCSRFKey, TrustedProxyHops: hops}
 
 	handler := httpapi.NewRouter(deps, opts)
 	srv := httptest.NewServer(handler)
@@ -369,5 +376,73 @@ func TestResendVerificationUnknownEmailMailsNothing(t *testing.T) {
 	}
 	if tokenRe.MatchString(e.mailLog.String()) {
 		t.Error("unknown address triggered a verification mail")
+	}
+}
+
+// TestResponsesAreNotCacheable walks a response of every shape this edge
+// produces — 200 with a body, 201, 204 with none, and an error status — because
+// the headers are set by two helpers and a route that bypassed both would be
+// invisible in any single-status test.
+//
+// The 200 on /auth/me is the one that matters: it returns the caller's own user
+// id, and without a cache directive a shared cache keyed on the URL alone may
+// serve it to the next caller.
+func TestResponsesAreNotCacheable(t *testing.T) {
+	e := newTestEnv(t)
+	e.registerVerifyLogin(t, "cache@example.com")
+
+	cases := []struct {
+		name string
+		resp *http.Response
+	}{
+		{"200 with a body", e.get(t, "/auth/me")},
+		{"204 with none", e.post(t, "/auth/logout", nil)},
+		{"201 on register", e.post(t, "/auth/register", map[string]string{"email": "cache2@example.com", "password": goodPassword})},
+		{"401 error", e.get(t, "/auth/me")},
+		{"health", e.get(t, "/healthz")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer tc.resp.Body.Close()
+			if got := tc.resp.Header.Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want %q", got, "no-store")
+			}
+			if got := tc.resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("X-Content-Type-Options = %q, want %q", got, "nosniff")
+			}
+		})
+	}
+}
+
+// TestHealthzIsPublicAndCheap proves the liveness probe answers with no
+// session, no CSRF token, and without touching anything — a load balancer has to be able
+// to call it before any user exists.
+func TestHealthzIsPublicAndCheap(t *testing.T) {
+	e := newTestEnv(t)
+
+	resp := e.get(t, "/healthz")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if len(body) != 0 {
+		t.Errorf("body = %q, want empty: the probe must not describe internals", body)
+	}
+	// It must not mint a session or a token on the way past.
+	if len(resp.Cookies()) != 0 {
+		t.Errorf("healthz set %d cookies, want 0", len(resp.Cookies()))
+	}
+}
+
+// TestHealthzIsGETOnly pins that the probe did not accidentally widen into a
+// route that accepts state-changing methods.
+func TestHealthzIsGETOnly(t *testing.T) {
+	e := newTestEnv(t)
+
+	resp := e.post(t, "/healthz", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST /healthz status = %d, want 405", resp.StatusCode)
 	}
 }

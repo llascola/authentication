@@ -286,3 +286,43 @@ func TestLoadScreenerRejectsBadValues(t *testing.T) {
 		})
 	}
 }
+
+// TestTrustedProxyHopsDefaultsToZero pins the safe default. Zero means no
+// forwarding header is consulted at all, which is the only correct posture for a
+// server that may be reachable directly — raising it has to be a deliberate act.
+func TestTrustedProxyHopsDefaultsToZero(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TrustedProxyHops != 0 {
+		t.Errorf("TrustedProxyHops = %d, want 0 by default", cfg.TrustedProxyHops)
+	}
+}
+
+func TestTrustedProxyHopsParses(t *testing.T) {
+	t.Setenv("AUTH_TRUSTED_PROXY_HOPS", "2")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TrustedProxyHops != 2 {
+		t.Errorf("TrustedProxyHops = %d, want 2", cfg.TrustedProxyHops)
+	}
+}
+
+// TestTrustedProxyHopsRejectsNonsense fails at startup rather than silently
+// degrading. An out-of-range value falls back to RemoteAddr for every request,
+// which is exactly the collapsed-bucket problem the setting exists to fix — so
+// it must not be possible to configure it by accident.
+func TestTrustedProxyHopsRejectsNonsense(t *testing.T) {
+	for _, v := range []string{"-1", "9", "one", "1.5"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("AUTH_TRUSTED_PROXY_HOPS", v)
+			if _, err := config.Load(); err == nil {
+				t.Errorf("Load accepted AUTH_TRUSTED_PROXY_HOPS=%q, want an error", v)
+			}
+		})
+	}
+}
