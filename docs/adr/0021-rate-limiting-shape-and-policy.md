@@ -156,6 +156,9 @@ symmetric, so the defaults should not be either.
   effective limit is N times the configured one. Acceptable for the current
   single-process deployment and the reason the port carries an error return;
   moving to Redis is an adapter swap and a config change, not a redesign.
+  *(The in-process limiter's own memory is bounded by
+  [ADR 0022](0022-process-level-edge-hardening.md), which also records why a
+  throttled bucket is never evicted.)*
 - **The email key on login is a targeted lockout, and we accept it.** Ten login
   attempts a minute against a victim's address — from any source, with no
   password knowledge and no account needed beyond knowing the address — empty
@@ -184,6 +187,10 @@ symmetric, so the defaults should not be either.
   a large NAT should expect to raise it — and, once a reverse proxy is in front,
   to revisit the `RemoteAddr`-only rule above, since every request will otherwise
   share the proxy's address.
+  *(Done: [ADR 0023](0023-trusted-proxy-hops-for-client-ip.md) makes the client
+  IP resolvable through counted trusted-proxy hops, still `RemoteAddr` by
+  default. The proxy case was the severe one — not a tuning inconvenience but a
+  single bucket shared by every user.)*
 - `NewRouter` panics on a missing limiter. A route silently shipping unthrottled
   is the exact failure this ADR exists to prevent, and a nil check at wiring time
   is cheaper than finding out from an SMTP bill.

@@ -73,6 +73,33 @@ recorded where they will be found again:
   gives one mailbox unlimited distinct keys. Bounding it means limiting account
   creation itself — a product decision, not a limiter tweak (ADR 0021).
 
+## Also on this branch — post-review hardening
+
+A production-readiness review of the finished phase (2026-08-26/27) found four
+gaps that no task covered, because none of them lives in a handler: they are in
+the `http.Server`, the response plumbing, and the limiter's own bookkeeping.
+They were fixed here rather than deferred, since the phase's own exit criterion
+is a server safe to expose to the internet. Recorded as
+[ADR 0022](../../adr/0022-process-level-edge-hardening.md) and
+[ADR 0023](../../adr/0023-trusted-proxy-hops-for-client-ip.md); no task
+frontmatter changed, so the status board is unaffected.
+
+- **Server deadlines.** Only `ReadHeaderTimeout` was set, and a zero timeout in
+  Go means none. `MaxBytesReader` bounds a body's bytes, not its arrival rate,
+  so a slow body held a goroutine indefinitely — and did so inside the per-email
+  limiter, which reads the body before the handler. A rate limit cannot count a
+  request that never finishes.
+- **`GET /healthz`.** The router mounted nine routes, all under `/auth/`, so a
+  load balancer had nothing to probe but the TCP port.
+- **Response headers.** `Cache-Control: no-store` and `nosniff` on every
+  response. `GET /auth/me` returns the caller's user id under a `200`, which is
+  heuristically cacheable — a shared cache keys on the URL, not on the cookie.
+- **Limiter memory.** Reclamation ran at most once per window, and three of the
+  four limiters use an hour. Sweep cadence is now capped and the map has a
+  ceiling, with throttled buckets never evicted — evicting one returns quota.
+
+The fourth item on that review, Postgres persistence, remains Phase 07.
+
 ## Explicitly not here
 
 Postgres persistence is [Phase 07](../phase-07-persistence/). Everything in this
