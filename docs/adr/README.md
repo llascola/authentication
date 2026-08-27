@@ -31,3 +31,5 @@ Format: lightweight [MADR](https://adr.github.io/madr/). Filename
 | [0019](0019-breach-screening-hibp-k-anonymity-fail-open.md) | Breach screening via HIBP k-anonymity, failing open by default | Accepted |
 | [0020](0020-resend-verification-enumeration-safe-edge-limited.md) | Resend-verification: enumeration-safe, edge-limited, no per-user cooldown | Accepted |
 | [0021](0021-rate-limiting-shape-and-policy.md) | Rate limiting: port shape, keying, and failure policy | Accepted |
+| [0022](0022-process-level-edge-hardening.md) | Process-level edge hardening: server deadlines, response headers, liveness probe | Accepted |
+| [0023](0023-trusted-proxy-hops-for-client-ip.md) | Client IP from a counted X-Forwarded-For hop, off by default | Accepted |

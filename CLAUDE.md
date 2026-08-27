@@ -116,7 +116,9 @@ in-process SMTP with adapter-assembled links (0016), keeping the initiating
 session on an authenticated password change (0017, superseding that part of
 0015), CSRF double-submit bound to the session by HMAC (0018), breach screening
 via HIBP k-anonymity failing open (0019), enumeration-safe resend-verification
-(0020), and rate-limiting shape/keying/failure policy (0021).
+(0020), rate-limiting shape/keying/failure policy (0021), and process-level edge
+hardening — server deadlines, response headers, liveness probe (0022), and
+client-IP resolution via counted trusted-proxy hops, off by default (0023).
 
 ## Commits
 
