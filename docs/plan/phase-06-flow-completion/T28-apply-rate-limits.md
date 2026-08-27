@@ -2,7 +2,7 @@
 id: T28
 phase: 06-flow-completion
 title: Apply rate limits at the edge
-status: todo
+status: done
 branch: phase-06-flow-completion
 layer: internal/adapter/http, internal/config, cmd/server
 depends_on: [T26, T27]

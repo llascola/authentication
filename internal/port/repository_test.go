@@ -49,6 +49,10 @@ func (*fakeSessionRepo) RevokeAllForUser(context.Context, domain.UserID, time.Ti
 	return nil
 }
 
+func (*fakeSessionRepo) RevokeAllExcept(context.Context, domain.UserID, domain.TokenHash, time.Time, string) error {
+	return nil
+}
+
 type fakeTokenRepo struct{}
 
 func (*fakeTokenRepo) Create(context.Context, *domain.VerificationToken) error { return nil }

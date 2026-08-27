@@ -2,7 +2,7 @@
 id: T26
 phase: 06-flow-completion
 title: Resend-verification endpoint
-status: todo
+status: done
 branch: phase-06-flow-completion
 layer: internal/adapter/http
 depends_on: [T25]

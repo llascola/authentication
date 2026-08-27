@@ -2,7 +2,7 @@
 id: T30
 phase: 06-flow-completion
 title: RevokeAllExcept — keep the current session on password change
-status: todo
+status: done
 branch: phase-06-flow-completion
 layer: internal/port, internal/adapter/memory, internal/app
 depends_on: []

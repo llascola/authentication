@@ -59,13 +59,35 @@ type PasswordCredentialRepository interface {
 //
 // Update serializes session touch/revoke (ADR 0008). FindByTokenHash returns
 // ErrSessionNotFound on a miss. RevokeAllForUser revokes every active session
-// for a user in one serialized operation (used by password change/reset); now
-// stamps the revocation instant and reason records why.
+// for a user in one serialized operation (used by password reset); now stamps
+// the revocation instant and reason records why.
+//
+// RevokeAllExcept is the same sweep with one session spared, identified by its
+// stored token hash — an authenticated password change should not log the user
+// out of the session they are changing it from (ADR 0017). It takes a hash, not
+// a raw token: raw bearer tokens never reach a repository (ADR 0013).
+//
+// A zero or unmatched keep hash spares nothing. That degenerate case is
+// deliberately the safe one: a caller that fails to supply a session revokes
+// everything rather than accidentally preserving one.
+//
+// The two revoke methods are therefore NOT independent capabilities —
+// RevokeAllForUser is exactly RevokeAllExcept with a zero keep hash, and an
+// implementation is expected to back both with one sweep rather than write the
+// loop twice. They are kept as two methods for the call sites: ResetPassword
+// revoking everything is a deliberate security decision (ADR 0015, unchanged by
+// ADR 0017), and "revoke all" states that at the call site in a way that passing
+// a zero value would not. Adding a third revoke shape is a signal to collapse
+// these into one, not to grow the interface again.
+//
+// Both leave already-revoked and expired sessions untouched, and report nil when
+// the user has no sessions at all.
 type SessionRepository interface {
 	Create(ctx context.Context, s *domain.Session) error
 	Update(ctx context.Context, s *domain.Session) error
 	FindByTokenHash(ctx context.Context, h domain.TokenHash) (*domain.Session, error)
 	RevokeAllForUser(ctx context.Context, id domain.UserID, now time.Time, reason string) error
+	RevokeAllExcept(ctx context.Context, id domain.UserID, keep domain.TokenHash, now time.Time, reason string) error
 }
 
 // VerificationTokenRepository persists the VerificationToken aggregate.

@@ -33,14 +33,14 @@ Statuses: `todo` · `in_progress` · `blocked` · `done`
 | T22 | main wiring + shutdown | 04 | phase-04-edge-wiring | T20, T21 | done |
 | T23 | Integration test | 05 | phase-05-verify | T22 | done |
 | T24 | ADRs for new port shapes | 05 | phase-05-verify | T01, T02, T03 | done |
-| T25 | ResendVerification use-case | 06 | phase-06-flow-completion | T13 | todo |
-| T26 | Resend-verification endpoint | 06 | phase-06-flow-completion | T25 | todo |
-| T27 | RateLimiter port + in-memory adapter | 06 | phase-06-flow-completion | — | todo |
-| T28 | Apply rate limits at the edge | 06 | phase-06-flow-completion | T26, T27 | todo |
-| T29 | CSRF token for cookie-authenticated POSTs | 06 | phase-06-flow-completion | — | todo |
-| T30 | RevokeAllExcept — keep the current session on password change | 06 | phase-06-flow-completion | — | todo |
-| T31 | Real breach screener (HIBP k-anonymity) | 06 | phase-06-flow-completion | — | todo |
-| T32 | ADRs for phase 06 decisions | 06 | phase-06-flow-completion | T25, T27, T29, T30, T31 | todo |
+| T25 | ResendVerification use-case | 06 | phase-06-flow-completion | T13 | done |
+| T26 | Resend-verification endpoint | 06 | phase-06-flow-completion | T25 | done |
+| T27 | RateLimiter port + in-memory adapter | 06 | phase-06-flow-completion | — | done |
+| T28 | Apply rate limits at the edge | 06 | phase-06-flow-completion | T26, T27 | done |
+| T29 | CSRF token for cookie-authenticated POSTs | 06 | phase-06-flow-completion | — | done |
+| T30 | RevokeAllExcept — keep the current session on password change | 06 | phase-06-flow-completion | — | done |
+| T31 | Real breach screener (HIBP k-anonymity) | 06 | phase-06-flow-completion | — | done |
+| T32 | ADRs for phase 06 decisions | 06 | phase-06-flow-completion | T25, T27, T29, T30, T31 | done |
 | T33 | Postgres schema + migrations | 07 | phase-07-persistence | — | todo |
 | T34 | Postgres repository adapters | 07 | phase-07-persistence | T33 | todo |
 | T35 | Expired token + session reclamation | 07 | phase-07-persistence | T34 | todo |

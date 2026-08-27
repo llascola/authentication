@@ -2,7 +2,7 @@
 id: T29
 phase: 06-flow-completion
 title: CSRF token for cookie-authenticated POSTs
-status: todo
+status: done
 branch: phase-06-flow-completion
 layer: internal/adapter/http
 depends_on: []

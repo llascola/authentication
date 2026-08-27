@@ -269,3 +269,98 @@ func TestCredentialRoundTripAndMiss(t *testing.T) {
 		t.Errorf("user id = %v, want %v", got.UserID(), uid)
 	}
 }
+
+func TestSessionRevokeAllExcept(t *testing.T) {
+	store := memory.NewStore()
+	sessions := store.Sessions()
+	uid := domain.NewUserID()
+
+	keep := mustSession(t, uid, mustTokenHash(t, 4, 4, 4))
+	drop := mustSession(t, uid, mustTokenHash(t, 5, 5, 5))
+	other := mustSession(t, domain.NewUserID(), mustTokenHash(t, 6, 6, 6))
+	for _, s := range []*domain.Session{keep, drop, other} {
+		if err := sessions.Create(ctx, s); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	}
+
+	if err := sessions.RevokeAllExcept(ctx, uid, keep.TokenHash(), timeFixed.Add(time.Minute), "password changed"); err != nil {
+		t.Fatalf("RevokeAllExcept: %v", err)
+	}
+
+	status := func(s *domain.Session) domain.SessionStatus {
+		t.Helper()
+		got, err := sessions.FindByTokenHash(ctx, s.TokenHash())
+		if err != nil {
+			t.Fatalf("re-find: %v", err)
+		}
+		return got.Status()
+	}
+	if got := status(keep); got != domain.SessionActive {
+		t.Errorf("spared session status = %v, want active", got)
+	}
+	if got := status(drop); got != domain.SessionRevoked {
+		t.Errorf("other session of the same user = %v, want revoked", got)
+	}
+	// The sweep is scoped by user id, so a different user keeps their session
+	// whether or not it was named.
+	if got := status(other); got != domain.SessionActive {
+		t.Errorf("another user's session = %v, want untouched", got)
+	}
+}
+
+// TestSessionRevokeAllExceptZeroHashSparesNothing pins the degenerate case both
+// revoke methods share: an empty keep hash matches no stored session, so the
+// sweep takes everything. RevokeAllForUser is implemented on exactly this.
+func TestSessionRevokeAllExceptZeroHashSparesNothing(t *testing.T) {
+	store := memory.NewStore()
+	sessions := store.Sessions()
+	uid := domain.NewUserID()
+
+	s := mustSession(t, uid, mustTokenHash(t, 7, 7, 7))
+	if err := sessions.Create(ctx, s); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := sessions.RevokeAllExcept(ctx, uid, domain.TokenHash{}, timeFixed.Add(time.Minute), "password reset"); err != nil {
+		t.Fatalf("RevokeAllExcept: %v", err)
+	}
+	got, err := sessions.FindByTokenHash(ctx, s.TokenHash())
+	if err != nil {
+		t.Fatalf("re-find: %v", err)
+	}
+	if got.Status() != domain.SessionRevoked {
+		t.Errorf("status = %v, want revoked: a zero keep hash must spare nothing", got.Status())
+	}
+}
+
+// TestSessionRevokeAllExceptLeavesRevokedAlone: a session already revoked is not
+// re-stamped with a new instant or reason.
+func TestSessionRevokeAllExceptLeavesRevokedAlone(t *testing.T) {
+	store := memory.NewStore()
+	sessions := store.Sessions()
+	uid := domain.NewUserID()
+
+	s := mustSession(t, uid, mustTokenHash(t, 8, 8, 8))
+	if err := sessions.Create(ctx, s); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	first := timeFixed.Add(time.Minute)
+	if err := sessions.RevokeAllForUser(ctx, uid, first, "logged out"); err != nil {
+		t.Fatalf("RevokeAllForUser: %v", err)
+	}
+	if err := sessions.RevokeAllExcept(ctx, uid, domain.TokenHash{}, first.Add(time.Hour), "password changed"); err != nil {
+		t.Fatalf("RevokeAllExcept: %v", err)
+	}
+
+	got, err := sessions.FindByTokenHash(ctx, s.TokenHash())
+	if err != nil {
+		t.Fatalf("re-find: %v", err)
+	}
+	if got.Reason() != "logged out" {
+		t.Errorf("reason = %q, want the original %q: an already-revoked session must not be re-stamped", got.Reason(), "logged out")
+	}
+	revokedAt, ok := got.RevokedAt()
+	if !ok || !revokedAt.Equal(first) {
+		t.Errorf("revokedAt = %v (ok=%v), want the original %v", revokedAt, ok, first)
+	}
+}

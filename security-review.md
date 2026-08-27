@@ -9,6 +9,12 @@
   sink, compared against the documented ADR posture, and filtered candidate
   findings for false positives.
 
+> **Point-in-time record — parts have since been addressed.** This review
+> describes the tree as of 2026-06-27 and is kept unedited as an audit record.
+> Several of its follow-ups shipped in Phase 06, and one of its statements no
+> longer describes current behaviour. See *Status since this review* at the end
+> before acting on anything here.
+
 ## Conclusion
 
 **No HIGH or MEDIUM severity vulnerabilities** were found in the newly added code
@@ -85,3 +91,37 @@ confidence: 3/10.
   initiating session too (logs the user out mid-action). This is a deliberate,
   secure default; relaxing it to keep the current session needs a
   revoke-all-except-current repository method (ADR 0015).
+  **Reversed — see below.**
+
+## Status since this review
+
+Recorded here rather than by editing the findings above, which stand as what was
+true on 2026-06-27.
+
+- **Session revocation is no longer all-or-nothing.** The last note above is
+  the one statement that now describes the opposite of the code:
+  `ChangePassword` keeps the initiating session and revokes every other one, via
+  the `RevokeAllExcept` repository method the note called for.
+  [ADR 0017](docs/adr/0017-keep-initiating-session-on-password-change.md)
+  reversed the default deliberately — proving the old password from a live
+  session is not evidence that session is compromised, and logging someone out
+  of the page they just used trains people not to change passwords at all.
+  `ResetPassword` still revokes everything, since it authenticates with a mailed
+  token and may be recovering from a compromise.
+- **CSRF and rate limiting shipped.** Both were listed as future work in
+  ADR 0015 and now exist: a double-submit token bound to the session by HMAC
+  ([ADR 0018](docs/adr/0018-csrf-double-submit-bound-to-session.md)), and
+  per-route limiters keyed by IP and submitted email
+  ([ADR 0021](docs/adr/0021-rate-limiting-shape-and-policy.md)).
+- **The breach screener is real, but off by default.** `screener.NoOp` is still
+  the default so CI stays offline; `AUTH_PASSWORD_SCREENER=hibp` selects the
+  HIBP k-anonymity screener, and startup warns loudly when it is not set
+  ([ADR 0019](docs/adr/0019-breach-screening-hibp-k-anonymity-fail-open.md)).
+- **`mailer.LogMailer` is still the dev-only placeholder** the dismissed
+  candidate describes, and still logs the raw token. `SmtpMailer` is wired
+  whenever `AUTH_SMTP_ADDR` is set
+  ([ADR 0016](docs/adr/0016-mailer-delivery-and-link-assembly.md)), so the
+  hardening note stands: do not deploy without configuring it.
+- **The scope of this review predates** ADRs 0017–0023 and everything in Phase
+  06. It says nothing about CSRF, rate limiting, breach screening, server
+  deadlines, response headers, or client-IP resolution.

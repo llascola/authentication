@@ -17,6 +17,91 @@ const (
 	maxBcryptCost = 31
 )
 
+// Breach-screener choices. ScreenerNoOp accepts everything and is the default so
+// an offline CI run and a fresh checkout both work; ScreenerHIBP queries the
+// Pwned Passwords range API.
+const (
+	ScreenerNoOp = "noop"
+	ScreenerHIBP = "hibp"
+)
+
+// Trusted-proxy hop counting for client-IP resolution.
+//
+// READ THIS BEFORE SETTING AUTH_TRUSTED_PROXY_HOPS. The default is 0, which
+// means "trust no forwarding header" — the posture ADR 0015 locked and the only
+// safe one for a server exposed directly. Raising it is a deliberate statement
+// about network topology, and getting it wrong is worse than leaving it alone.
+//
+// Why the knob exists at all: this server speaks plain HTTP, and CookieSecure
+// defaults to true, so a real deployment terminates TLS in front of it. From
+// that moment the TCP peer of every request is the proxy, and the per-IP rate
+// limits of ADR 0021 collapse into ONE bucket shared by the whole internet —
+// ten logins a minute for all users combined. That is a self-inflicted outage,
+// and it needs no attacker to trigger it.
+//
+// Why a hop COUNT and not "read the header": X-Forwarded-For is append-only and
+// the client writes the first entry. A request arriving as
+//
+//	X-Forwarded-For: 1.2.3.4                     (whatever the client typed)
+//
+// leaves your proxy as
+//
+//	X-Forwarded-For: 1.2.3.4, 203.0.113.9
+//	                          ^^^^^^^^^^^ written by YOUR proxy from the
+//	                                      connection it actually accepted
+//
+// Everything left of your own infrastructure's entries is attacker-controlled;
+// everything right of them is not. So the value to trust is the Nth from the
+// RIGHT, where N is the number of proxies YOU operate. One load balancer is 1.
+// A CDN in front of a load balancer is 2.
+//
+// Setting N too high reads an entry the client forged. Setting it too low reads
+// an internal proxy address, which silently recreates the single-bucket problem.
+// Neither is detectable from inside the process, which is why this is
+// configuration and not a heuristic.
+//
+// THE ASSUMPTION THIS RESTS ON: the application port is reachable only through
+// those proxies. If anything can open a connection directly, it writes the whole
+// header itself, there is no infrastructure-written entry on the right, and hop
+// counting hands the caller a fresh rate-limit bucket per request — the exact
+// bypass the default is protecting against. Bind to a private interface, or use
+// a security group, before raising this.
+//
+// A SAFER ALTERNATIVE IF YOU CONTROL THE PROXY: configure it to REPLACE the
+// header rather than append to it, discarding whatever the client sent —
+// nginx `proxy_set_header X-Forwarded-For $remote_addr` (replace) instead of
+// `$proxy_add_x_forwarded_for` (append). The header then carries exactly one
+// value, always written by you, and AUTH_TRUSTED_PROXY_HOPS=1 is correct and
+// forgery-proof regardless of what the client sends. Managed load balancers
+// mostly append: AWS ALB appends, Cloudflare appends to XFF while also setting
+// its own single-valued CF-Connecting-IP.
+//
+// See ADR 0023 for the decision and what it deliberately does not do.
+const (
+	// defaultTrustedProxyHops is 0: RemoteAddr only, no header consulted.
+	defaultTrustedProxyHops = 0
+
+	// maxTrustedProxyHops rejects a value no real chain reaches. It is a typo
+	// guard, not a security boundary: an over-large N silently degrades to
+	// RemoteAddr, which is the failure this whole knob exists to avoid, so it is
+	// better refused at startup than discovered from a rate-limit graph.
+	maxTrustedProxyHops = 8
+)
+
+// minCSRFKeyBytes is the floor for AUTH_CSRF_KEY. The token is an HMAC-SHA256,
+// whose security rests entirely on this key being unguessable; 32 bytes matches
+// the hash's block-relevant size and rules out a short passphrase being pasted
+// in by mistake.
+const minCSRFKeyBytes = 32
+
+// RateLimitPolicy is one route's throttle: Limit actions per Window, per key.
+// The edge decides what a key is (client IP, submitted email); this only
+// carries the numbers.
+type RateLimitPolicy struct {
+	Limit  int
+	Window time.Duration
+}
+
 // Config is the resolved server configuration.
 type Config struct {
 	ListenAddr   string
@@ -24,6 +109,32 @@ type Config struct {
 	AbsTTL       time.Duration
 	BcryptCost   int
 	CookieSecure bool
+
+	// CSRFKey is the server secret the CSRF token is HMAC'd with. Empty means
+	// unset: the composition root generates an ephemeral one and warns, which is
+	// fine while sessions are in-memory (a restart drops both) and must not
+	// survive into Phase 07, where sessions outlive the process.
+	CSRFKey []byte
+
+	// TrustedProxyHops is how many proxies YOU operate in front of this server.
+	// 0 (the default) means the client IP is RemoteAddr and no forwarding header
+	// is consulted at all. See the block comment above the constants — do not
+	// raise this without reading it.
+	TrustedProxyHops int
+
+	// Rate limits, one policy per protected route. Defaults are chosen so a
+	// real person never meets them: someone mistyping a password a few times,
+	// or asking for a second verification mail, must not be locked out.
+	LoginRate    RateLimitPolicy
+	RegisterRate RateLimitPolicy
+	ForgotRate   RateLimitPolicy
+	ResendRate   RateLimitPolicy
+
+	// Breach screening. Screener selects the implementation; the default keeps
+	// dev and CI offline, so `make check` never touches the network.
+	Screener         string
+	ScreenerTimeout  time.Duration
+	ScreenerFailOpen bool
 
 	// Mailer. When SMTPAddr is empty the process wires the dev-only LogMailer;
 	// when set, all other mailer fields are required and an SmtpMailer is used.
@@ -45,17 +156,54 @@ const (
 	defaultIdleTTL    = 30 * time.Minute
 	defaultAbsTTL     = 24 * time.Hour
 	defaultBcryptCost = 10 // bcrypt.DefaultCost
+
+	// defaultScreener keeps a fresh checkout and CI offline. Turning on the real
+	// screen is a deliberate deployment act (AUTH_PASSWORD_SCREENER=hibp).
+	defaultScreener = ScreenerNoOp
+	// defaultScreenerTimeout bounds a third party's latency on the registration
+	// path. Short enough that an outage degrades rather than hangs.
+	defaultScreenerTimeout = 3 * time.Second
+	// defaultScreenerFailOpen: an unreachable corpus accepts the password. See
+	// screener.FailOpen and ADR 0019 for the trade.
+	defaultScreenerFailOpen = true
+)
+
+// Default rate limits. Each applies per key, and every protected route is keyed
+// by client IP; login, forgot, and resend are additionally keyed by the
+// submitted email.
+//
+// Login is per-minute because a human retries a mistyped password within
+// seconds and gives up quickly, while a spray needs sustained volume. The
+// mail-sending routes are per-hour because their cost is not CPU but an actual
+// email: five is generous for a person, and a hard ceiling on how much mail one
+// address can be made to receive.
+//
+// These are per-process (the in-memory limiter). N replicas mean N times these
+// numbers until a shared backend replaces it.
+var (
+	defaultLoginRate    = RateLimitPolicy{Limit: 10, Window: time.Minute}
+	defaultRegisterRate = RateLimitPolicy{Limit: 10, Window: time.Hour}
+	defaultForgotRate   = RateLimitPolicy{Limit: 5, Window: time.Hour}
+	defaultResendRate   = RateLimitPolicy{Limit: 5, Window: time.Hour}
 )
 
 // Load reads configuration from the environment, applying defaults for unset
 // values and rejecting malformed or out-of-range ones.
 func Load() (Config, error) {
 	cfg := Config{
-		ListenAddr:   defaultListenAddr,
-		IdleTTL:      defaultIdleTTL,
-		AbsTTL:       defaultAbsTTL,
-		BcryptCost:   defaultBcryptCost,
-		CookieSecure: true,
+		ListenAddr:       defaultListenAddr,
+		IdleTTL:          defaultIdleTTL,
+		AbsTTL:           defaultAbsTTL,
+		BcryptCost:       defaultBcryptCost,
+		CookieSecure:     true,
+		TrustedProxyHops: defaultTrustedProxyHops,
+		Screener:         defaultScreener,
+		ScreenerTimeout:  defaultScreenerTimeout,
+		ScreenerFailOpen: defaultScreenerFailOpen,
+		LoginRate:        defaultLoginRate,
+		RegisterRate:     defaultRegisterRate,
+		ForgotRate:       defaultForgotRate,
+		ResendRate:       defaultResendRate,
 	}
 
 	if v := os.Getenv("AUTH_LISTEN_ADDR"); v != "" {
@@ -74,6 +222,51 @@ func Load() (Config, error) {
 	}
 	if cfg.CookieSecure, err = boolEnv("AUTH_COOKIE_SECURE", cfg.CookieSecure); err != nil {
 		return Config{}, err
+	}
+	if cfg.TrustedProxyHops, err = intEnv("AUTH_TRUSTED_PROXY_HOPS", cfg.TrustedProxyHops); err != nil {
+		return Config{}, err
+	}
+	if cfg.TrustedProxyHops < 0 || cfg.TrustedProxyHops > maxTrustedProxyHops {
+		return Config{}, fmt.Errorf("config: AUTH_TRUSTED_PROXY_HOPS must be in [0,%d], got %d",
+			maxTrustedProxyHops, cfg.TrustedProxyHops)
+	}
+
+	for _, p := range []struct {
+		prefix string
+		dst    *RateLimitPolicy
+	}{
+		{"AUTH_RATELIMIT_LOGIN", &cfg.LoginRate},
+		{"AUTH_RATELIMIT_REGISTER", &cfg.RegisterRate},
+		{"AUTH_RATELIMIT_FORGOT", &cfg.ForgotRate},
+		{"AUTH_RATELIMIT_RESEND", &cfg.ResendRate},
+	} {
+		if *p.dst, err = rateLimitEnv(p.prefix, *p.dst); err != nil {
+			return Config{}, err
+		}
+	}
+
+	if v := os.Getenv("AUTH_PASSWORD_SCREENER"); v != "" {
+		cfg.Screener = v
+	}
+	if cfg.Screener != ScreenerNoOp && cfg.Screener != ScreenerHIBP {
+		return Config{}, fmt.Errorf("config: AUTH_PASSWORD_SCREENER must be %q or %q, got %q",
+			ScreenerNoOp, ScreenerHIBP, cfg.Screener)
+	}
+	if cfg.ScreenerTimeout, err = durationEnv("AUTH_SCREENER_TIMEOUT", cfg.ScreenerTimeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.ScreenerTimeout <= 0 {
+		return Config{}, fmt.Errorf("config: AUTH_SCREENER_TIMEOUT must be positive, got %s", cfg.ScreenerTimeout)
+	}
+	if cfg.ScreenerFailOpen, err = boolEnv("AUTH_SCREENER_FAIL_OPEN", cfg.ScreenerFailOpen); err != nil {
+		return Config{}, err
+	}
+
+	if v := os.Getenv("AUTH_CSRF_KEY"); v != "" {
+		if len(v) < minCSRFKeyBytes {
+			return Config{}, fmt.Errorf("config: AUTH_CSRF_KEY must be at least %d bytes, got %d", minCSRFKeyBytes, len(v))
+		}
+		cfg.CSRFKey = []byte(v)
 	}
 
 	cfg.SMTPAddr = os.Getenv("AUTH_SMTP_ADDR")
@@ -110,6 +303,31 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// rateLimitEnv reads <prefix>_LIMIT and <prefix>_WINDOW, falling back to def.
+//
+// A non-positive limit or window is rejected rather than clamped: unlike a
+// missing variable, an explicitly configured "0" is someone stating an
+// intention, and for a throttle the plausible intentions ("unlimited" or "block
+// everything") are both things they should have to spell out some other way.
+// Failing at startup beats silently running with no protection.
+func rateLimitEnv(prefix string, def RateLimitPolicy) (RateLimitPolicy, error) {
+	limit, err := intEnv(prefix+"_LIMIT", def.Limit)
+	if err != nil {
+		return RateLimitPolicy{}, err
+	}
+	window, err := durationEnv(prefix+"_WINDOW", def.Window)
+	if err != nil {
+		return RateLimitPolicy{}, err
+	}
+	if limit < 1 {
+		return RateLimitPolicy{}, fmt.Errorf("config: %s_LIMIT must be >= 1, got %d", prefix, limit)
+	}
+	if window <= 0 {
+		return RateLimitPolicy{}, fmt.Errorf("config: %s_WINDOW must be positive, got %s", prefix, window)
+	}
+	return RateLimitPolicy{Limit: limit, Window: window}, nil
 }
 
 func durationEnv(key string, def time.Duration) (time.Duration, error) {

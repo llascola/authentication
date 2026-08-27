@@ -2,7 +2,7 @@
 id: T27
 phase: 06-flow-completion
 title: RateLimiter port + in-memory adapter
-status: todo
+status: done
 branch: phase-06-flow-completion
 layer: internal/port, internal/adapter/ratelimit
 depends_on: []

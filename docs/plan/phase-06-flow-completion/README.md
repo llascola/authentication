@@ -47,7 +47,58 @@ cannon pointed at your own domain.
 
 ## Current task
 
-→ **T25**. T27 can run in parallel; T28 needs both.
+→ none. T25–T32 are all `done`; the phase is complete. Next is
+[Phase 07](../phase-07-persistence/), starting at T33.
+
+Decisions this phase locked are ADRs [0017](../../adr/0017-keep-initiating-session-on-password-change.md)
+through [0021](../../adr/0021-rate-limiting-shape-and-policy.md).
+
+Four things were deliberately left open rather than silently dropped, all
+recorded where they will be found again:
+
+- The CSRF token cannot be *revoked*, only reissued — closing that means
+  re-keying the session bearer token on credential change, which is domain and
+  repository work ([ADR 0018](../../adr/0018-csrf-double-submit-bound-to-session.md),
+  pinned by `TestCSRFOldTokenStillVerifiesAfterRotation`). Phase 07 rewrites the
+  session repository anyway, so that is the natural place for it.
+- Breach screening is off by default (`AUTH_PASSWORD_SCREENER=noop`) so CI stays
+  offline, which means ADR 0011's trade is unmet until a deployment turns it on.
+  Startup logs a warning saying so.
+- Login's per-email rate-limit key lets anyone knowing an address hold that
+  account's login at `429`. `Limits.Login` is one limiter instance serving both
+  the IP and email keys, so the two cannot be tuned apart; splitting them is the
+  fix ([ADR 0021](../../adr/0021-rate-limiting-shape-and-policy.md) consequences).
+- Rate limiting bounds mail to a registered *address*, not to a *mailbox*:
+  registration mails arbitrary addresses under an IP-only key, and subaddressing
+  gives one mailbox unlimited distinct keys. Bounding it means limiting account
+  creation itself — a product decision, not a limiter tweak (ADR 0021).
+
+## Also on this branch — post-review hardening
+
+A production-readiness review of the finished phase (2026-08-26/27) found four
+gaps that no task covered, because none of them lives in a handler: they are in
+the `http.Server`, the response plumbing, and the limiter's own bookkeeping.
+They were fixed here rather than deferred, since the phase's own exit criterion
+is a server safe to expose to the internet. Recorded as
+[ADR 0022](../../adr/0022-process-level-edge-hardening.md) and
+[ADR 0023](../../adr/0023-trusted-proxy-hops-for-client-ip.md); no task
+frontmatter changed, so the status board is unaffected.
+
+- **Server deadlines.** Only `ReadHeaderTimeout` was set, and a zero timeout in
+  Go means none. `MaxBytesReader` bounds a body's bytes, not its arrival rate,
+  so a slow body held a goroutine indefinitely — and did so inside the per-email
+  limiter, which reads the body before the handler. A rate limit cannot count a
+  request that never finishes.
+- **`GET /healthz`.** The router mounted nine routes, all under `/auth/`, so a
+  load balancer had nothing to probe but the TCP port.
+- **Response headers.** `Cache-Control: no-store` and `nosniff` on every
+  response. `GET /auth/me` returns the caller's user id under a `200`, which is
+  heuristically cacheable — a shared cache keys on the URL, not on the cookie.
+- **Limiter memory.** Reclamation ran at most once per window, and three of the
+  four limiters use an hour. Sweep cadence is now capped and the map has a
+  ceiling, with throttled buckets never evicted — evicting one returns quota.
+
+The fourth item on that review, Postgres persistence, remains Phase 07.
 
 ## Explicitly not here
 

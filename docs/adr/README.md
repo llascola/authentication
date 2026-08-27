@@ -24,5 +24,12 @@ Format: lightweight [MADR](https://adr.github.io/madr/). Filename
 | [0012](0012-repository-port-contract.md) | Repository port contract: sentinel not-found, adapter-side constraints, copy-on-store | Accepted |
 | [0013](0013-opaque-token-generation-and-rehash.md) | Opaque token generation and verification re-hash recipe | Accepted |
 | [0014](0014-nfc-normalization-behind-port.md) | NFC password normalization behind a Normalizer port | Accepted |
-| [0015](0015-http-edge-security-posture.md) | HTTP edge security posture: cookies, enumeration safety, timing, session revocation | Accepted |
+| [0015](0015-http-edge-security-posture.md) | HTTP edge security posture: cookies, enumeration safety, timing, session revocation | Accepted (revocation part superseded by 0017) |
 | [0016](0016-mailer-delivery-and-link-assembly.md) | Mailer delivery: in-process SMTP, adapter-assembled links, secret crosses to provider | Accepted |
+| [0017](0017-keep-initiating-session-on-password-change.md) | Keep the initiating session on an authenticated password change | Accepted |
+| [0018](0018-csrf-double-submit-bound-to-session.md) | CSRF: double-submit token bound to the session by HMAC | Accepted |
+| [0019](0019-breach-screening-hibp-k-anonymity-fail-open.md) | Breach screening via HIBP k-anonymity, failing open by default | Accepted |
+| [0020](0020-resend-verification-enumeration-safe-edge-limited.md) | Resend-verification: enumeration-safe, edge-limited, no per-user cooldown | Accepted |
+| [0021](0021-rate-limiting-shape-and-policy.md) | Rate limiting: port shape, keying, and failure policy | Accepted |
+| [0022](0022-process-level-edge-hardening.md) | Process-level edge hardening: server deadlines, response headers, liveness probe | Accepted |
+| [0023](0023-trusted-proxy-hops-for-client-ip.md) | Client IP from a counted X-Forwarded-For hop, off by default | Accepted |

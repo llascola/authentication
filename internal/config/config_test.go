@@ -116,3 +116,213 @@ func TestLoadMailerPartialRejected(t *testing.T) {
 		t.Error("Load with partial mailer config returned nil error")
 	}
 }
+
+func TestLoadRateLimitDefaults(t *testing.T) {
+	for _, k := range []string{
+		"AUTH_RATELIMIT_LOGIN_LIMIT", "AUTH_RATELIMIT_LOGIN_WINDOW",
+		"AUTH_RATELIMIT_REGISTER_LIMIT", "AUTH_RATELIMIT_REGISTER_WINDOW",
+		"AUTH_RATELIMIT_FORGOT_LIMIT", "AUTH_RATELIMIT_FORGOT_WINDOW",
+		"AUTH_RATELIMIT_RESEND_LIMIT", "AUTH_RATELIMIT_RESEND_WINDOW",
+	} {
+		t.Setenv(k, "")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Every policy must default to something usable: an unset variable can never
+	// leave a route with a zero budget (locks everyone out) or a zero window.
+	for name, p := range map[string]config.RateLimitPolicy{
+		"login":    cfg.LoginRate,
+		"register": cfg.RegisterRate,
+		"forgot":   cfg.ForgotRate,
+		"resend":   cfg.ResendRate,
+	} {
+		if p.Limit < 1 {
+			t.Errorf("%s default limit = %d, want >= 1", name, p.Limit)
+		}
+		if p.Window <= 0 {
+			t.Errorf("%s default window = %s, want > 0", name, p.Window)
+		}
+	}
+	if cfg.LoginRate != (config.RateLimitPolicy{Limit: 10, Window: time.Minute}) {
+		t.Errorf("LoginRate = %+v, want 10 per minute", cfg.LoginRate)
+	}
+	if cfg.ForgotRate != (config.RateLimitPolicy{Limit: 5, Window: time.Hour}) {
+		t.Errorf("ForgotRate = %+v, want 5 per hour", cfg.ForgotRate)
+	}
+}
+
+func TestLoadRateLimitFromEnv(t *testing.T) {
+	t.Setenv("AUTH_RATELIMIT_LOGIN_LIMIT", "3")
+	t.Setenv("AUTH_RATELIMIT_LOGIN_WINDOW", "30s")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LoginRate != (config.RateLimitPolicy{Limit: 3, Window: 30 * time.Second}) {
+		t.Errorf("LoginRate = %+v, want 3 per 30s", cfg.LoginRate)
+	}
+	// An override on one policy must not disturb the others.
+	if cfg.ResendRate != (config.RateLimitPolicy{Limit: 5, Window: time.Hour}) {
+		t.Errorf("ResendRate = %+v, want the untouched default", cfg.ResendRate)
+	}
+}
+
+// TestLoadRateLimitRejectsDisabling pins the security decision: an explicitly
+// configured zero is refused at startup rather than clamped, so nobody switches
+// a throttle off by accident and finds out from an SMTP bill.
+func TestLoadRateLimitRejectsDisabling(t *testing.T) {
+	cases := map[string][2]string{
+		"zero limit":     {"AUTH_RATELIMIT_LOGIN_LIMIT", "0"},
+		"negative limit": {"AUTH_RATELIMIT_LOGIN_LIMIT", "-1"},
+		"zero window":    {"AUTH_RATELIMIT_LOGIN_WINDOW", "0s"},
+		"bad integer":    {"AUTH_RATELIMIT_LOGIN_LIMIT", "lots"},
+		"bad duration":   {"AUTH_RATELIMIT_LOGIN_WINDOW", "soon"},
+	}
+	for name, kv := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(kv[0], kv[1])
+			if _, err := config.Load(); err == nil {
+				t.Errorf("Load with %s=%q returned nil error", kv[0], kv[1])
+			}
+		})
+	}
+}
+
+func TestLoadCSRFKey(t *testing.T) {
+	t.Run("unset leaves it empty for the composition root", func(t *testing.T) {
+		t.Setenv("AUTH_CSRF_KEY", "")
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if len(cfg.CSRFKey) != 0 {
+			t.Errorf("CSRFKey = %q, want empty when unset", cfg.CSRFKey)
+		}
+	})
+
+	t.Run("a long enough key is taken verbatim", func(t *testing.T) {
+		const key = "0123456789abcdef0123456789abcdef" // exactly 32
+		t.Setenv("AUTH_CSRF_KEY", key)
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if string(cfg.CSRFKey) != key {
+			t.Errorf("CSRFKey = %q, want %q", cfg.CSRFKey, key)
+		}
+	})
+
+	// A short key is rejected rather than stretched: the whole scheme rests on
+	// this value being unguessable, and silently accepting a passphrase would
+	// hide that.
+	t.Run("a short key is rejected", func(t *testing.T) {
+		t.Setenv("AUTH_CSRF_KEY", "too-short")
+		if _, err := config.Load(); err == nil {
+			t.Error("Load with a short AUTH_CSRF_KEY returned nil error")
+		}
+	})
+}
+
+func TestLoadScreenerDefaultsToNoOp(t *testing.T) {
+	for _, k := range []string{"AUTH_PASSWORD_SCREENER", "AUTH_SCREENER_TIMEOUT", "AUTH_SCREENER_FAIL_OPEN"} {
+		t.Setenv(k, "")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// The default must keep `make check` and a fresh checkout offline.
+	if cfg.Screener != config.ScreenerNoOp {
+		t.Errorf("Screener = %q, want %q", cfg.Screener, config.ScreenerNoOp)
+	}
+	if cfg.ScreenerTimeout <= 0 {
+		t.Errorf("ScreenerTimeout = %s, want > 0", cfg.ScreenerTimeout)
+	}
+	if !cfg.ScreenerFailOpen {
+		t.Error("ScreenerFailOpen = false, want true by default")
+	}
+}
+
+func TestLoadScreenerFromEnv(t *testing.T) {
+	t.Setenv("AUTH_PASSWORD_SCREENER", "hibp")
+	t.Setenv("AUTH_SCREENER_TIMEOUT", "1500ms")
+	t.Setenv("AUTH_SCREENER_FAIL_OPEN", "false")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Screener != config.ScreenerHIBP {
+		t.Errorf("Screener = %q, want %q", cfg.Screener, config.ScreenerHIBP)
+	}
+	if cfg.ScreenerTimeout != 1500*time.Millisecond {
+		t.Errorf("ScreenerTimeout = %s, want 1.5s", cfg.ScreenerTimeout)
+	}
+	if cfg.ScreenerFailOpen {
+		t.Error("ScreenerFailOpen = true, want the configured false")
+	}
+}
+
+// TestLoadScreenerRejectsBadValues: a typo'd screener name must not silently
+// fall back to the no-op, which would disable screening without saying so.
+func TestLoadScreenerRejectsBadValues(t *testing.T) {
+	cases := map[string][2]string{
+		"unknown screener": {"AUTH_PASSWORD_SCREENER", "hipb"},
+		"zero timeout":     {"AUTH_SCREENER_TIMEOUT", "0s"},
+		"negative timeout": {"AUTH_SCREENER_TIMEOUT", "-1s"},
+		"bad duration":     {"AUTH_SCREENER_TIMEOUT", "soon"},
+		"bad bool":         {"AUTH_SCREENER_FAIL_OPEN", "maybe"},
+	}
+	for name, kv := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(kv[0], kv[1])
+			if _, err := config.Load(); err == nil {
+				t.Errorf("Load with %s=%q returned nil error", kv[0], kv[1])
+			}
+		})
+	}
+}
+
+// TestTrustedProxyHopsDefaultsToZero pins the safe default. Zero means no
+// forwarding header is consulted at all, which is the only correct posture for a
+// server that may be reachable directly — raising it has to be a deliberate act.
+func TestTrustedProxyHopsDefaultsToZero(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TrustedProxyHops != 0 {
+		t.Errorf("TrustedProxyHops = %d, want 0 by default", cfg.TrustedProxyHops)
+	}
+}
+
+func TestTrustedProxyHopsParses(t *testing.T) {
+	t.Setenv("AUTH_TRUSTED_PROXY_HOPS", "2")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TrustedProxyHops != 2 {
+		t.Errorf("TrustedProxyHops = %d, want 2", cfg.TrustedProxyHops)
+	}
+}
+
+// TestTrustedProxyHopsRejectsNonsense fails at startup rather than silently
+// degrading. An out-of-range value falls back to RemoteAddr for every request,
+// which is exactly the collapsed-bucket problem the setting exists to fix — so
+// it must not be possible to configure it by accident.
+func TestTrustedProxyHopsRejectsNonsense(t *testing.T) {
+	for _, v := range []string{"-1", "9", "one", "1.5"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("AUTH_TRUSTED_PROXY_HOPS", v)
+			if _, err := config.Load(); err == nil {
+				t.Errorf("Load accepted AUTH_TRUSTED_PROXY_HOPS=%q, want an error", v)
+			}
+		})
+	}
+}
